@@ -133,20 +133,20 @@ async def on_message(message):
                     await message.channel.send("Sunucu öne çıkarıldı! Teşekkürler.")
         return
 
-# Görsel ve video log sistemi
-if message.channel.id != LOG_CHANNEL_ID and message.attachments:
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    if log_channel:
-        for attachment in message.attachments:
-            if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.webm']):
-                log_text = f"Kullanıcı: {message.author} (`{message.author.id}`)\nKanal: {message.channel.mention}\n{attachment.url}"
-                try:
-                    await log_channel.send(content=log_text)
-                except Exception as e:
-                    print(f"Medya loglanırken hata oluştu: {e}")
-
+    # Görsel ve video log sistemi
+    if message.channel.id != LOG_CHANNEL_ID and message.attachments:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            for attachment in message.attachments:
+                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.webm']):
+                    log_text = f"Kullanıcı: {message.author} (`{message.author.id}`)\nKanal: {message.channel.mention}\n{attachment.url}"
+                    try:
+                        await log_channel.send(content=log_text)
+                    except Exception as e:
+                        print(f"Medya loglanırken hata oluştu: {e}")
 
     await bot.process_commands(message)
+
 
 # ==================== ANA ÇALIŞTIRMA FONKSİYONU ====================
 async def main():
