@@ -1,6 +1,6 @@
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 from aiohttp import web
@@ -16,16 +16,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ID Tanımlamaları
 LOG_CHANNEL_ID = 1381770621054091306       # Medya loglarının atılacağı kanal
 WELCOME_CHANNEL_ID = 1488662459009994965   # Giriş ve çıkış mesajlarının atılacağı kanal
+BUMP_CHANNEL_ID = 1381768080610426930      # Disboard ve bump hatırlatmalarının yapılacağı kanal
 
-# Giriş mesajlarını takip etmek için sözlük
+DISBOARD_BOT_ID = 302050872383242240       # Disboard Bot ID
+
 join_messages = {}
-
-# Bump takip değişkenleri
-last_bump_time = None
-bump_channel_id = None
-two_hour_reminder_sent = False
-twelve_hour_reminder_sent = False
-last_reminder_time = None
 
 # ==================== WEB SUNUCUSU (Render / Uptime için) ====================
 async def handle(request):
@@ -42,48 +37,97 @@ async def start_web_server():
     await site.start()
     print("Web sunucusu baslatildi.")
 
-# ==================== BUMP HATIRLATMA GÖREVİ ====================
-@tasks.loop(minutes=1)
-async def check_bump_reminders():
-    global two_hour_reminder_sent, twelve_hour_reminder_sent, last_bump_time, bump_channel_id, last_reminder_time
-    if not bump_channel_id:
+# ==================== BUMP KONTROL VE HATIRLATMA SİSTEMİ ====================
+async def check_disboard_bump():
+    channel = bot.get_channel(BUMP_CHANNEL_ID)
+    if not channel:
         return
+
+    now = datetime.now(timezone.utc)
+    
+    last_disboard_msg = None
+    last_reminder_msg = None
+    last_angry_msg = None
+
+    # Kanal geçmişindeki son 50 mesajı tara
+    async for msg in channel.history(limit=50):
+        # 1. En son başarılı Disboard mesajını bul
+        if not last_disboard_msg and msg.author.id == DISBOARD_BOT_ID:
+            for embed in msg.embeds:
+                desc = embed.description or ""
+                if "Bump done" in desc or "başarıyla" in desc.lower():
+                    last_disboard_msg = msg
+                    break
         
-    now = datetime.now()
+        # 2. Botun son attığı "buuump" hatırlatmasını bul
+        if not last_reminder_msg and msg.author.id == bot.user.id and msg.content == "buuump":
+            last_reminder_msg = msg
 
-    # 1. Aşama: Disboard mesajından 2 saat sonra "buuump" gönder
-    if not two_hour_reminder_sent and last_bump_time and (now - last_bump_time >= timedelta(hours=2)):
-        channel = bot.get_channel(bump_channel_id)
-        if channel:
+        # 3. Botun son attığı "yapsaniza lan" mesajını bul
+        if not last_angry_msg and msg.author.id == bot.user.id and msg.content == "yapsaniza lan":
+            last_angry_msg = msg
+
+        # Hepsi bulunduysa döngüden çık
+        if last_disboard_msg and last_reminder_msg and last_angry_msg:
+            break
+
+    if not last_disboard_msg:
+        return
+
+    disboard_time = last_disboard_msg.created_at
+    
+    # Hatırlatma mesajı en son Disboard mesajından SONRA mı atılmış?
+    reminder_is_after_bump = last_reminder_msg and last_reminder_msg.created_at > disboard_time
+
+    # --- 1. AŞAMA: 2 Saatlik Hatırlatma Kontrolü ---
+    if (now - disboard_time).total_seconds() >= 7200: # 7200 saniye = 2 saat
+        if not reminder_is_after_bump:
             await channel.send("buuump")
-        two_hour_reminder_sent = True
-        last_reminder_time = now
+            print(f"[{datetime.now()}] 2 saatlik bump hatırlatması gönderildi.")
+            return
 
-    # 2. Aşama: "buuump" atıldıktan 12 saat sonra hâlâ yeni bump gelmediyse "yapsaniza lan" gönder
-    if two_hour_reminder_sent and not twelve_hour_reminder_sent and last_reminder_time and (now - last_reminder_time >= timedelta(hours=12)):
-        channel = bot.get_channel(bump_channel_id)
-        if channel:
-            await channel.send("yapsaniza lan")
-        twelve_hour_reminder_sent = True
+    # --- 2. AŞAMA: 8 Saatlik "Yapsanıza Lan" Kontrolü ---
+    if reminder_is_after_bump:
+        reminder_time = last_reminder_msg.created_at
+        
+        # Hatırlatmadan sonra yeni bir bump atılmış mı? (Disboard mesajı hatırlatmadan sonraysa yeni bump yapılmıştır)
+        new_bump_after_reminder = disboard_time > reminder_time
+
+        if not new_bump_after_reminder:
+            # Hatırlatmanın üzerinden 8 saat (28800 saniye) geçmiş mi?
+            if (now - reminder_time).total_seconds() >= 28800:
+                # "yapsaniza lan" bu hatırlatmadan sonra daha önce gönderilmiş mi?
+                angry_is_after_reminder = last_angry_msg and last_angry_msg.created_at > reminder_time
+                
+                if not angry_is_after_reminder:
+                    await channel.send("yapsaniza lan")
+                    print(f"[{datetime.now()}] 8 saat geçtiği için 'yapsaniza lan' gönderildi.")
+
+# Periyodik kontrol görevi (Her 1 dakikada bir çalışır)
+@tasks.loop(minutes=1)
+async def bump_check_loop():
+    await check_disboard_bump()
 
 # ==================== BOT ETKİNLİKLERİ ====================
 @bot.event
 async def on_ready():
     print(f"Bot giris yapti: {bot.user.name} (ID: {bot.user.id})")
     
-    # Tüm eski slaş komutlarını temizle
     try:
         bot.tree.clear_commands(guild=None)
         await bot.tree.sync()
-        print("Tüm slaş komutları başarıyla silindi ve temizlendi.")
+        print("Tüm slaş komutları temizlendi.")
     except Exception as e:
-        print(f"Slaş komutları temizlenirken hata oluştu: {e}")
+        print(f"Slaş komutları temizlenirken hata: {e}")
 
-    # Bump hatırlatıcı döngüsünü başlat
-    if not check_bump_reminders.is_running():
-        check_bump_reminders.start()
+    # Bot aktif olduğu an kanalı kontrol et ve eksik bir durum varsa anında aksiyon al
+    await check_disboard_bump()
 
-    # Log kanalına doğrudan "p" mesajı gönder
+    # Döngüyü başlat
+    if not bump_check_loop.is_running():
+        bump_check_loop.start()
+
+    # Log kanalına "p" mesajı gönder
     try:
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
@@ -114,23 +158,10 @@ async def on_member_remove(member):
         
         await channel.send(f"{member.mention} geri gitti... 😳")
 
-# ==================== BUMP VE MEDYA LOG SİSTEMİ ====================
+# ==================== MEDYA LOG SİSTEMİ ====================
 @bot.event
 async def on_message(message):
-    global last_bump_time, bump_channel_id, two_hour_reminder_sent, twelve_hour_reminder_sent, last_reminder_time
-
     if message.author.bot:
-        # Disboard Bump kontrolü (ID: 302050872383242240)
-        if message.author.id == 302050872383242240:
-            for embed in message.embeds:
-                description = embed.description or ""
-                if "Bump done" in description or "başarıyla" in description.lower():
-                    last_bump_time = datetime.now()
-                    bump_channel_id = message.channel.id
-                    two_hour_reminder_sent = False
-                    twelve_hour_reminder_sent = False
-                    last_reminder_time = None
-                    await message.channel.send("Sunucu öne çıkarıldı! Teşekkürler.")
         return
 
     # Görsel ve video log sistemi (Doğrudan URL ile Cloudflare filtresi aşılır)
