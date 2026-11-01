@@ -27,7 +27,7 @@ two_hour_reminder_sent = False
 twelve_hour_reminder_sent = False
 last_reminder_time = None
 
-# ==================== WEB SUNUCUSU (Fly.io / Uptime) ====================
+# ==================== WEB SUNUCUSU (Render / Uptime için) ====================
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -57,9 +57,9 @@ async def check_bump_reminders():
         if channel:
             await channel.send("buuump")
         two_hour_reminder_sent = True
-        last_reminder_time = now  # Son hatırlatmanın zamanı kaydediliyor
+        last_reminder_time = now
 
-    # 2. Aşama: "buuump" atıldıktan (son hatırlatmadan) 12 saat sonra hâlâ yeni bump gelmediyse "yapsaniza lan" gönder
+    # 2. Aşama: "buuump" atıldıktan 12 saat sonra hâlâ yeni bump gelmediyse "yapsaniza lan" gönder
     if two_hour_reminder_sent and not twelve_hour_reminder_sent and last_reminder_time and (now - last_reminder_time >= timedelta(hours=12)):
         channel = bot.get_channel(bump_channel_id)
         if channel:
@@ -71,7 +71,7 @@ async def check_bump_reminders():
 async def on_ready():
     print(f"Bot giris yapti: {bot.user.name} (ID: {bot.user.id})")
     
-    # Tüm eski slaş komutlarını temizle ve Discord'dan sil
+    # Tüm eski slaş komutlarını temizle
     try:
         bot.tree.clear_commands(guild=None)
         await bot.tree.sync()
@@ -83,7 +83,7 @@ async def on_ready():
     if not check_bump_reminders.is_running():
         check_bump_reminders.start()
 
-    # Log kanalına "p" mesajı
+    # Log kanalına doğrudan "p" mesajı gönder
     try:
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
@@ -133,7 +133,7 @@ async def on_message(message):
                     await message.channel.send("Sunucu öne çıkarıldı! Teşekkürler.")
         return
 
-    # Görsel ve video log sistemi
+    # Görsel ve video log sistemi (Doğrudan URL ile Cloudflare filtresi aşılır)
     if message.channel.id != LOG_CHANNEL_ID and message.attachments:
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
@@ -146,7 +146,6 @@ async def on_message(message):
                         print(f"Medya loglanırken hata oluştu: {e}")
 
     await bot.process_commands(message)
-
 
 # ==================== ANA ÇALIŞTIRMA FONKSİYONU ====================
 async def main():
