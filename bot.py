@@ -41,6 +41,7 @@ async def start_web_server():
 async def check_disboard_bump():
     channel = bot.get_channel(BUMP_CHANNEL_ID)
     if not channel:
+        print("Bump kanalı bulunamadı!")
         return
 
     now = datetime.now(timezone.utc)
@@ -49,9 +50,9 @@ async def check_disboard_bump():
     last_reminder_msg = None
     last_angry_msg = None
 
-    # Kanal geçmişindeki son 50 mesajı tara
-    async for msg in channel.history(limit=50):
-        # 1. En son başarılı Disboard mesajını bul
+    # Kanal geçmişini tarıyoruz (Aktif sunucularda mesajlar hızlı akabileceği için limiti 200 yaptık)
+    async for msg in channel.history(limit=200):
+        # 1. En son başarılı Disboard mesajı
         if not last_disboard_msg and msg.author.id == DISBOARD_BOT_ID:
             for embed in msg.embeds:
                 desc = embed.description or ""
@@ -59,49 +60,50 @@ async def check_disboard_bump():
                     last_disboard_msg = msg
                     break
         
-        # 2. Botun son attığı "buuump" hatırlatmasını bul
-        if not last_reminder_msg and msg.author.id == bot.user.id and msg.content == "buuump":
-            last_reminder_msg = msg
-
-        # 3. Botun son attığı "yapsaniza lan" mesajını bul
-        if not last_angry_msg and msg.author.id == bot.user.id and msg.content == "yapsaniza lan":
-            last_angry_msg = msg
+        # 2. Botun attığı mesajlar
+        if msg.author.id == bot.user.id:
+            if not last_reminder_msg and msg.content == "buuump":
+                last_reminder_msg = msg
+            elif not last_angry_msg and msg.content == "yapsaniza lan":
+                last_angry_msg = msg
 
         # Hepsi bulunduysa döngüden çık
         if last_disboard_msg and last_reminder_msg and last_angry_msg:
             break
 
     if not last_disboard_msg:
+        print("Geçmişte Disboard bump mesajı bulunamadı.")
         return
 
     disboard_time = last_disboard_msg.created_at
-    
-    # Hatırlatma mesajı en son Disboard mesajından SONRA mı atılmış?
-    reminder_is_after_bump = last_reminder_msg and last_reminder_msg.created_at > disboard_time
+    elapsed_since_bump = (now - disboard_time).total_seconds()
 
-    # --- 1. AŞAMA: 2 Saatlik Hatırlatma Kontrolü ---
-    if (now - disboard_time).total_seconds() >= 7200: # 7200 saniye = 2 saat
-        if not reminder_is_after_bump:
-            await channel.send("buuump")
-            print(f"[{datetime.now()}] 2 saatlik bump hatırlatması gönderildi.")
-            return
+    # Bu bump'tan sonra bot hatırlatması ("buuump") atılmış mı?
+    reminder_after_bump = last_reminder_msg and last_reminder_msg.created_at > disboard_time
 
-    # --- 2. AŞAMA: 8 Saatlik "Yapsanıza Lan" Kontrolü ---
-    if reminder_is_after_bump:
+    # --- 1. KONTROL: 2 Saatlik Hatırlatma ("buuump") ---
+    # Eğer disboard üzerinden 2 saat (7200 saniye) veya daha fazla geçtiyse VE bu bump için henüz hatırlatılmadıysa:
+    if elapsed_since_bump >= 7200 and not reminder_after_bump:
+        await channel.send("buuump")
+        print(f"[{datetime.now()}] Vakti gelmiş/geçmiş 2 saatlik 'buuump' hatırlatması gönderildi.")
+        return
+
+    # --- 2. KONTROL: 8 Saatlik Uyarı ("yapsaniza lan") ---
+    # Eğer hatırlatma atıldıysa, hatırlatmadan sonra yeni bir bump yapılıp yapılmadığına bakılır
+    if reminder_after_bump:
         reminder_time = last_reminder_msg.created_at
+        elapsed_since_reminder = (now - reminder_time).total_seconds()
         
-        # Hatırlatmadan sonra yeni bir bump atılmış mı? (Disboard mesajı hatırlatmadan sonraysa yeni bump yapılmıştır)
+        # Hatırlatmadan sonra yeni bir bump atıldı mı?
         new_bump_after_reminder = disboard_time > reminder_time
 
         if not new_bump_after_reminder:
-            # Hatırlatmanın üzerinden 8 saat (28800 saniye) geçmiş mi?
-            if (now - reminder_time).total_seconds() >= 28800:
-                # "yapsaniza lan" bu hatırlatmadan sonra daha önce gönderilmiş mi?
-                angry_is_after_reminder = last_angry_msg and last_angry_msg.created_at > reminder_time
-                
-                if not angry_is_after_reminder:
+            # Hatırlatmanın üzerinden 8 saat (28800 saniye) veya daha fazla geçtiyse:
+            if elapsed_since_reminder >= 28800:
+                angry_after_reminder = last_angry_msg and last_angry_msg.created_at > reminder_time
+                if not angry_after_reminder:
                     await channel.send("yapsaniza lan")
-                    print(f"[{datetime.now()}] 8 saat geçtiği için 'yapsaniza lan' gönderildi.")
+                    print(f"[{datetime.now()}] Vakti gelmiş/geçmiş 8 saatlik 'yapsaniza lan' mesajı gönderildi.")
 
 # Periyodik kontrol görevi (Her 1 dakikada bir çalışır)
 @tasks.loop(minutes=1)
@@ -120,10 +122,10 @@ async def on_ready():
     except Exception as e:
         print(f"Slaş komutları temizlenirken hata: {e}")
 
-    # Bot aktif olduğu an kanalı kontrol et ve eksik bir durum varsa anında aksiyon al
+    # BOT UYANIR UYANMAZ (Açılışta anında) geçmişi kontrol et ve kaçırılan süre varsa direkt mesaj at!
     await check_disboard_bump()
 
-    # Döngüyü başlat
+    # Periyodik döngüyü başlat
     if not bump_check_loop.is_running():
         bump_check_loop.start()
 
