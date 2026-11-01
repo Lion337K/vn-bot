@@ -1,4 +1,0 @@
-fly.toml
-.venv
-[processes]
-web = "python bot.py"
