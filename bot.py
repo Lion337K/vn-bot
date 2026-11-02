@@ -67,7 +67,7 @@ config = load_config()
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True # Bu intentin Discord Developer Portal'da açık olduğundan emin ol!
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -76,10 +76,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ───────────────────────────────────────────────
 
 async def perform_bump_check(ctx_or_interaction=None):
-    """
-    Bump kanalını tarar, son Disboard mesajını bulur ve mantığı uygular.
-    İster periyodik döngüden ister /checkbump komutundan tetiklenebilir.
-    """
     channel = bot.get_channel(BUMP_CHANNEL_ID)
     if not channel:
         msg = "⚠️ HATA: BUMP_CHANNEL_ID bulunamadı veya bot bu kanalı görmüyor!"
@@ -164,15 +160,32 @@ async def before_bump_check():
 async def on_ready():
     print(f"✅ Giriş yapıldı: {bot.user}")
     
+    # 1. ESKİ KOMUTLARI TEMİZLEME VE GÜNCEL OLANLARI YÜKLEME
     try:
         guild = discord.Object(id=GUILD_ID)
+        
+        # Sunucuya özel tüm eski komutları tamamen sıfırla
         bot.tree.clear_commands(guild=guild)
+        
+        # Mevcut komutları ağaca kopyala ve sadece bu sunucuya senkronize et (anında görünür)
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
-        print("✅ Komutlar senkronize edildi.")
+        print("✅ Eski slash komutları temizlendi ve güncel komutlar sunucuya senkronize edildi.")
     except Exception as e:
         print(f"⚠️ Senkronizasyon hatası: {e}")
 
+    # 2. BOTUN HAZIR OLDUĞUNU BELİRTEN "p" MESAJI (Log Kanalına)
+    log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
+    if log_channel:
+        try:
+            await log_channel.send("p")
+            print("📤 Log kanalına 'p' mesajı başarıyla gönderildi.")
+        except Exception as e:
+            print(f"⚠️ Log kanalına 'p' mesajı gönderilemedi: {e}")
+    else:
+        print("⚠️ 'p' mesajı için belirlenen IMAGE_LOG_CHANNEL_ID bulunamadı!")
+
+    # 3. PERİYODİK BUMP KONTROLÜNÜ BAŞLAT
     if not bump_check_loop.is_running():
         bump_check_loop.start()
         print("🚀 Periyodik bump kontrol döngüsü (1 dk) başlatıldı.")
@@ -257,7 +270,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(RESPONSES["err_generic"].format(error=error), ephemeral=True)
 
 if __name__ == "__main__":
-    # Render web servisinin port gereksinimini karşılamak için Flask'i başlatıyoruz
     from flask import Flask
     import threading
 
