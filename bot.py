@@ -1,198 +1,239 @@
-import os
-import asyncio
-from datetime import datetime, timedelta, timezone
 import discord
-from discord.ext import commands, tasks
-from aiohttp import web
+from discord.ext import commands
+from discord import app_commands
+import asyncio
+import os
+import json
+from datetime import datetime, timezone
+
+# ───────────────────────────────────────────────
+#  BOT YANITLARI VE MESAJLARI (Buradan kolayca değiştirebilirsin)
+# ───────────────────────────────────────────────
+
+RESPONSES = {
+    "welcome_message": "{member} aramıza katıldı fln filan 😒",
+    "bump_message": "buuuuump",
+    "setwelcome_success": "✨ Karşılama mesajı güncellendi:\n> {yeni_mesaj}",
+    "setbump_success": "⏳ Bump hatırlatma mesajı güncellendi:\n> {yeni_mesaj}",
+    "sendmsg_not_found": "🌌 Böyle bir kanal bulunamadı.",
+    "sendmsg_success": "🦋 Mesaj başarıyla gönderildi.",
+    "sendmsg_error": "❌ Hata oluştu: {error}",
+    "err_missing_permissions": "yetkin yok kullanamazsin.",
+    "err_cooldown": "yavasla biraz. {retry_after} saniye sonra bidaha dene.",
+    "err_generic": "hata olustu: {error}"
+}
+
+# ───────────────────────────────────────────────
+#  AYARLAR VE ID'LER
+# ───────────────────────────────────────────────
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+GUILD_ID             = 1480303038408425764
+WELCOME_CHANNEL_ID   = 1480314604713414757
+BUMP_CHANNEL_ID      = 1517972647126761624
+IMAGE_LOG_CHANNEL_ID = 1480317488456536166
+
+BUMP_BOT_ID          = 302050872383242240 
+CONFIG_FILE          = "config.json"
+
+# ───────────────────────────────────────────────
+#  DİNAMİK MESAJ SİSTEMİ (JSON KONTROLÜ)
+# ───────────────────────────────────────────────
+
+DEFAULT_CONFIG = {
+    "WELCOME_MESSAGE": RESPONSES["welcome_message"],
+    "BUMP_MESSAGE": RESPONSES["bump_message"]
+}
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ Config dosyası okunamadı: {e}")
+    return DEFAULT_CONFIG.copy()
+
+def save_config(config_data):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=4)
+
+config = load_config()
+
+# ───────────────────────────────────────────────
+#  BOT SETUP
+# ───────────────────────────────────────────────
 
 intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.reactions = True
 intents.members = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ID Tanımlamaları
-LOG_CHANNEL_ID = 1381770621054091306       # Medya loglarının atılacağı kanal
-WELCOME_CHANNEL_ID = 1488662459009994965   # Giriş ve çıkış mesajlarının atılacağı kanal
-BUMP_CHANNEL_ID = 1381768080610426930      # Disboard ve bump hatırlatmalarının yapılacağı kanal
+bump_task = None
 
-DISBOARD_BOT_ID = 302050872383242240       # Disboard Bot ID
+# ───────────────────────────────────────────────
+#  BUMP ZAMANLAYICI VE GEÇMİŞ KONTROLÜ
+# ───────────────────────────────────────────────
 
-join_messages = {}
+async def schedule_bump_in(seconds: float):
+    global bump_task
+    try:
+        await asyncio.sleep(seconds)
+        channel = bot.get_channel(BUMP_CHANNEL_ID)
+        if channel:
+            await channel.send(config["BUMP_MESSAGE"])
+            print("📢 Bump hatırlatma mesajı gönderildi.")
+    except asyncio.CancelledError:
+        pass
 
-# ==================== WEB SUNUCUSU (Render / Uptime için) ====================
-async def handle(request):
-    return web.Response(text="Bot is running!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
+async def check_last_bump_and_schedule():
+    global bump_task
+    await asyncio.sleep(3) 
     
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print("Web sunucusu baslatildi.")
-
-# ==================== BUMP KONTROL VE HATIRLATMA SİSTEMİ ====================
-async def check_disboard_bump():
     channel = bot.get_channel(BUMP_CHANNEL_ID)
     if not channel:
-        print("Bump kanalı bulunamadı!")
         return
 
-    now = datetime.now(timezone.utc)
-    
-    last_disboard_msg = None
-    last_reminder_msg = None
-    last_angry_msg = None
+    try:
+        async for message in channel.history(limit=50):
+            is_target = False
+            if message.author.id == BUMP_BOT_ID:
+                if message.embeds:
+                    embed_text = "".join([embed.description or "" for embed in message.embeds]).lower()
+                    if "bump done" in embed_text or "başarılı" in embed_text or "👍" in embed_text:
+                        is_target = True
+                elif "bump done" in message.content.lower() or "başarılı" in message.content.lower() or "👍" in message.content:
+                    is_target = True
+            
+            if is_target:
+                now = datetime.now(timezone.utc)
+                elapsed = (now - message.created_at).total_seconds()
+                two_hours = 2 * 60 * 60  
+                
+                if bump_task and not bump_task.done():
+                    bump_task.cancel()
 
-    # Kanal geçmişini tarıyoruz (Aktif sunucularda mesajlar hızlı akabileceği için limiti 200 yaptık)
-    async for msg in channel.history(limit=200):
-        # 1. En son başarılı Disboard mesajı
-        if not last_disboard_msg and msg.author.id == DISBOARD_BOT_ID:
-            for embed in msg.embeds:
-                desc = embed.description or ""
-                if "Bump done" in desc or "başarıyla" in desc.lower():
-                    last_disboard_msg = msg
-                    break
-        
-        # 2. Botun attığı mesajlar
-        if msg.author.id == bot.user.id:
-            if not last_reminder_msg and msg.content == "buuump":
-                last_reminder_msg = msg
-            elif not last_angry_msg and msg.content == "yapsaniza lan":
-                last_angry_msg = msg
+                if elapsed >= two_hours:
+                    await channel.send(config["BUMP_MESSAGE"])
+                else:
+                    remaining = two_hours - elapsed
+                    bump_task = asyncio.ensure_future(schedule_bump_in(remaining))
+                return
+    except Exception as e:
+        print(f"⚠️ Geçmiş kontrolü hatası: {e}")
 
-        # Hepsi bulunduysa döngüden çık
-        if last_disboard_msg and last_reminder_msg and last_angry_msg:
-            break
+# ───────────────────────────────────────────────
+#  EVENTS (OLAYLAR)
+# ───────────────────────────────────────────────
 
-    if not last_disboard_msg:
-        print("Geçmişte Disboard bump mesajı bulunamadı.")
-        return
-
-    disboard_time = last_disboard_msg.created_at
-    elapsed_since_bump = (now - disboard_time).total_seconds()
-
-    # Bu bump'tan sonra bot hatırlatması ("buuump") atılmış mı?
-    reminder_after_bump = last_reminder_msg and last_reminder_msg.created_at > disboard_time
-
-    # --- 1. KONTROL: 2 Saatlik Hatırlatma ("buuump") ---
-    # Eğer disboard üzerinden 2 saat (7200 saniye) veya daha fazla geçtiyse VE bu bump için henüz hatırlatılmadıysa:
-    if elapsed_since_bump >= 7200 and not reminder_after_bump:
-        await channel.send("buuump")
-        print(f"[{datetime.now()}] Vakti gelmiş/geçmiş 2 saatlik 'buuump' hatırlatması gönderildi.")
-        return
-
-    # --- 2. KONTROL: 8 Saatlik Uyarı ("yapsaniza lan") ---
-    # Eğer hatırlatma atıldıysa, hatırlatmadan sonra yeni bir bump yapılıp yapılmadığına bakılır
-    if reminder_after_bump:
-        reminder_time = last_reminder_msg.created_at
-        elapsed_since_reminder = (now - reminder_time).total_seconds()
-        
-        # Hatırlatmadan sonra yeni bir bump atıldı mı?
-        new_bump_after_reminder = disboard_time > reminder_time
-
-        if not new_bump_after_reminder:
-            # Hatırlatmanın üzerinden 8 saat (28800 saniye) veya daha fazla geçtiyse:
-            if elapsed_since_reminder >= 28800:
-                angry_after_reminder = last_angry_msg and last_angry_msg.created_at > reminder_time
-                if not angry_after_reminder:
-                    await channel.send("yapsaniza lan")
-                    print(f"[{datetime.now()}] Vakti gelmiş/geçmiş 8 saatlik 'yapsaniza lan' mesajı gönderildi.")
-
-# Periyodik kontrol görevi (Her 1 dakikada bir çalışır)
-@tasks.loop(minutes=1)
-async def bump_check_loop():
-    await check_disboard_bump()
-
-# ==================== BOT ETKİNLİKLERİ ====================
 @bot.event
 async def on_ready():
-    print(f"Bot giris yapti: {bot.user.name} (ID: {bot.user.id})")
+    print(f"✅ Giriş yapıldı: {bot.user}")
     
     try:
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync()
-        print("Tüm slaş komutları temizlendi.")
+        guild = discord.Object(id=GUILD_ID)
+        bot.tree.clear_commands(guild=guild)
+        bot.tree.copy_global_to(guild=guild)
+        await bot.tree.sync(guild=guild)
+        print("✅ Komutlar senkronize edildi.")
     except Exception as e:
-        print(f"Slaş komutları temizlenirken hata: {e}")
+        print(f"⚠️ Senkronizasyon hatası: {e}")
 
-    # BOT UYANIR UYANMAZ (Açılışta anında) geçmişi kontrol et ve kaçırılan süre varsa direkt mesaj at!
-    await check_disboard_bump()
+    asyncio.ensure_future(check_last_bump_and_schedule())
 
-    # Periyodik döngüyü başlat
-    if not bump_check_loop.is_running():
-        bump_check_loop.start()
-
-    # Log kanalına "p" mesajı gönder
-    try:
-        log_channel = bot.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
-            await log_channel.send("p")
-    except Exception as e:
-        print(f"Log kanalına 'p' mesajı gönderilemedi: {e}")
-
-# ==================== GİRİŞ / ÇIKIŞ BİLDİRİMLERİ ====================
 @bot.event
-async def on_member_join(member):
+async def on_member_join(member: discord.Member):
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
     if channel:
-        msg = await channel.send(f"{member.mention} aramiza katildi fln filan 😒")
-        join_messages[member.id] = msg
+        msg = config["WELCOME_MESSAGE"].replace("{member}", member.mention)
+        await channel.send(msg)
 
 @bot.event
-async def on_member_remove(member):
-    channel = bot.get_channel(WELCOME_CHANNEL_ID)
-    if channel:
-        if member.id in join_messages:
-            try:
-                msg = join_messages[member.id]
-                await msg.edit(content=f"{member.mention} geri gitti... 😳")
-                del join_messages[member.id]
-                return
-            except Exception:
-                pass
-        
-        await channel.send(f"{member.mention} geri gitti... 😳")
-
-# ==================== MEDYA LOG SİSTEMİ ====================
-@bot.event
-async def on_message(message):
-    if message.author.bot:
+async def on_message(message: discord.Message):
+    global bump_task
+    if message.author == bot.user:
         return
 
-    # Görsel ve video log sistemi (Doğrudan URL ile Cloudflare filtresi aşılır)
-    if message.channel.id != LOG_CHANNEL_ID and message.attachments:
-        log_channel = bot.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
+    # Medya Log Sistemi
+    log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
+    if log_channel and message.channel.id != IMAGE_LOG_CHANNEL_ID and not message.author.bot:
+        if message.attachments:
             for attachment in message.attachments:
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.webm']):
-                    log_text = f"Kullanıcı: {message.author} (`{message.author.id}`)\nKanal: {message.channel.mention}\n{attachment.url}"
-                    try:
-                        await log_channel.send(content=log_text)
-                    except Exception as e:
-                        print(f"Medya loglanırken hata oluştu: {e}")
+                await log_channel.send(f"📎 **{message.author.display_name}**", file=await attachment.to_file())
+
+    # Disboard Bump Algılama
+    if message.channel.id == BUMP_CHANNEL_ID and message.author.id == BUMP_BOT_ID:
+        is_bump_success = False
+        if message.embeds:
+            embed_text = "".join([embed.description or "" for embed in message.embeds]).lower()
+            if "bump done" in embed_text or "başarılı" in embed_text or "👍" in embed_text:
+                is_bump_success = True
+        elif "bump done" in message.content.lower() or "başarılı" in message.content.lower() or "👍" in message.content:
+            is_bump_success = True
+            
+        if is_bump_success:
+            if bump_task and not bump_task.done():
+                bump_task.cancel() 
+            bump_task = asyncio.ensure_future(schedule_bump_in(2 * 60 * 60))
 
     await bot.process_commands(message)
 
-# ==================== ANA ÇALIŞTIRMA FONKSİYONU ====================
-async def main():
-    TOKEN = os.environ.get("DISCORD_TOKEN")
-    if not TOKEN:
-        print("HATA: DISCORD_TOKEN bulunamadi!")
-        return
+# ───────────────────────────────────────────────
+#  SLASH COMMANDS (YÖNETİCİ KOMUTLARI)
+# ───────────────────────────────────────────────
 
-    await start_web_server()
-    await bot.start(TOKEN)
+@bot.tree.command(name="setwelcome", description="Hoş geldin mesajını değiştirir. ({member} etiketi kullanabilirsiniz)")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_welcome(interaction: discord.Interaction, yeni_mesaj: str):
+    config["WELCOME_MESSAGE"] = yeni_mesaj
+    save_config(config)
+    await interaction.response.send_message(RESPONSES["setwelcome_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True)
+
+@bot.tree.command(name="setbump", description="Bump hatırlatma mesajını değiştirir.")
+@app_codes := None # placeholder check
+@app_commands.checks.has_permissions(administrator=True)
+async def set_bump(interaction: discord.Interaction, yeni_mesaj: str):
+    config["BUMP_MESSAGE"] = yeni_mesaj
+    save_config(config)
+    await interaction.response.send_message(RESPONSES["setbump_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True)
+
+@bot.tree.command(name="testwelcome", description="Hoş geldin mesajını test et.")
+@app_commands.checks.has_permissions(administrator=True)
+async def test_welcome(interaction: discord.Interaction):
+    msg = config["WELCOME_MESSAGE"].replace("{member}", interaction.user.mention)
+    await interaction.response.send_message(msg, ephemeral=False)
+
+@bot.tree.command(name="sendmsg", description="Belirli bir kanala mesaj gönder.")
+@app_commands.checks.has_permissions(administrator=True)
+async def send_msg(interaction: discord.Interaction, channel_id: str, message: str):
+    try:
+        target_channel = bot.get_channel(int(channel_id))
+        if not target_channel:
+            await interaction.response.send_message(RESPONSES["sendmsg_not_found"], ephemeral=True)
+            return
+        await target_channel.send(message)
+        await interaction.response.send_message(RESPONSES["sendmsg_success"], ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(RESPONSES["sendmsg_error"].format(error=e), ephemeral=True)
+
+# ───────────────────────────────────────────────
+#  HATA YAKALAYICI
+# ───────────────────────────────────────────────
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(RESPONSES["err_missing_permissions"], ephemeral=True)
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        msg = RESPONSES["err_cooldown"].format(retry_after=round(error.retry_after, 1))
+        await interaction.response.send_message(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(RESPONSES["err_generic"].format(error=error), ephemeral=True)
 
 if __name__ == "__main__":
-    print("Bot baslatiliyor, sistem kontrol ediliyor...")
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot kapatılıyor...")
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        print("HATA: DISCORD_TOKEN bulunamadı!")
