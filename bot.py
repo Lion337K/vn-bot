@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import os
 import json
+import traceback
 from datetime import datetime, timezone
 
 # ───────────────────────────────────────────────
@@ -66,23 +67,31 @@ config = load_config()
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
+intents.message_content = True # Bu intentin Discord Developer Portal'da açık olduğundan emin ol!
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ───────────────────────────────────────────────
-#  BUMP KONTROL DÖNGÜSÜ (HER 1 DAKİKADA BİR)
+#  ORTAK BUMP KONTROL FONKSİYONU (DEBUG ÖZELLİKLİ)
 # ───────────────────────────────────────────────
 
-@tasks.loop(minutes=1)
-async def bump_check_loop():
+async def perform_bump_check(ctx_or_interaction=None):
+    """
+    Bump kanalını tarar, son Disboard mesajını bulur ve mantığı uygular.
+    İster periyodik döngüden ister /checkbump komutundan tetiklenebilir.
+    """
     channel = bot.get_channel(BUMP_CHANNEL_ID)
     if not channel:
-        return
+        msg = "⚠️ HATA: BUMP_CHANNEL_ID bulunamadı veya bot bu kanalı görmüyor!"
+        print(msg)
+        return msg
+
+    print(f"🔍 [DEBUG] Bump taraması başlatıldı. Kanal: {channel.name} ({channel.id})")
 
     try:
         messages = [msg async for msg in channel.history(limit=30)]
-        
+        print(f"📦 [DEBUG] Kanaldan son {len(messages)} mesaj çekildi.")
+
         # 1. En son Disboard mesajını bul
         last_disboard_msg = None
         for msg in messages:
@@ -91,33 +100,57 @@ async def bump_check_loop():
                 break
         
         if not last_disboard_msg:
-            return # Kanalda hiç Disboard mesajı yok
+            msg = "📭 [DEBUG] Kanal geçmişinde Disboard botuna ait hiç mesaj bulunamadı."
+            print(msg)
+            return msg
+
+        print(f"🤖 [DEBUG] Son Disboard mesajı bulundu! Atılma Zamanı (UTC): {last_disboard_msg.created_at}")
 
         # 2. Son Disboard mesajından sonra bizim botumuz hatırlatma atmış mı kontrol et
         reminder_sent_after = False
         for msg in messages:
             if msg.id == last_disboard_msg.id:
-                break # Disboard mesajına ulaştıysak geçmişe gitmeyi bırak
+                break 
             if msg.author.id == bot.user.id:
                 reminder_sent_after = True
                 break
 
-        # Eğer bu bump için zaten hatırlatma atıldıysa tekrar atma
         if reminder_sent_after:
-            return
+            msg = "✅ [DEBUG] Son Disboard mesajından sonra zaten hatırlatma atılmış. Bekleniyor..."
+            print(msg)
+            return msg
 
         # 3. Süreyi hesapla
         now = datetime.now(timezone.utc)
         elapsed = (now - last_disboard_msg.created_at).total_seconds()
         two_hours = 2 * 60 * 60  
+        remaining = two_hours - elapsed
 
-        # 4. 2 saat dolmuşsa (veya bot kapalı kaldığı için süresi geçmişse) hemen yapıştır
+        print(f"⏱️ [DEBUG] Geçen süre: {elapsed / 60:.1f} dakika. Kalan süre: {remaining / 60:.1f} dakika.")
+
+        # 4. 2 saat dolmuşsa (veya geçmişse) hemen hatırlat
         if elapsed >= two_hours:
             await channel.send(config["BUMP_MESSAGE"])
-            print("📢 2 saatlik süre doldu (veya geçmişti), bump hatırlatması gönderildi.")
+            msg = "📢 [DEBUG] 2 saatlik süre dolmuş (veya geçmişti)! Hatırlatma mesajı gönderildi."
+            print(msg)
+            return msg
+        else:
+            msg = f"⏳ [DEBUG] Henüz 2 saat dolmamış. Kalan süre: {remaining / 60:.1f} dk."
+            print(msg)
+            return msg
 
     except Exception as e:
-        print(f"⚠️ Bump döngüsü hatası: {e}")
+        error_trace = traceback.format_exc()
+        print(f"❌ [DEBUG HATA] Bump kontrolünde patlama:\n{error_trace}")
+        return f"hata olustu: {e}"
+
+# ───────────────────────────────────────────────
+#  BUMP KONTROL DÖNGÜSÜ (HER 1 DAKİKADA BİR)
+# ───────────────────────────────────────────────
+
+@tasks.loop(minutes=1)
+async def bump_check_loop():
+    await perform_bump_check()
 
 @bump_check_loop.before_loop
 async def before_bump_check():
@@ -140,9 +173,9 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Senkronizasyon hatası: {e}")
 
-    # Periyodik bump kontrol döngüsünü başlat
     if not bump_check_loop.is_running():
         bump_check_loop.start()
+        print("🚀 Periyodik bump kontrol döngüsü (1 dk) başlatıldı.")
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -201,6 +234,13 @@ async def send_msg(interaction: discord.Interaction, channel_id: str, message: s
         await interaction.response.send_message(RESPONSES["sendmsg_success"], ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(RESPONSES["sendmsg_error"].format(error=e), ephemeral=True)
+
+@bot.tree.command(name="checkbump", description="Bump durumunu ve zamanlayıcıyı manuel test eder (Debug).")
+@app_commands.checks.has_permissions(administrator=True)
+async def check_bump(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    result = await perform_bump_check()
+    await interaction.followup.send(f"🔍 **Debug Sonucu:**\n```text\n{result}\n```", ephemeral=True)
 
 # ───────────────────────────────────────────────
 #  HATA YAKALAYICI
