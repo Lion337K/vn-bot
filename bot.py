@@ -1,31 +1,9 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
-import asyncio
 import os
 import json
-import threading
 from datetime import datetime, timezone
-from flask import Flask
-
-# ───────────────────────────────────────────────
-#  RENDER VE UPTIMEROBOT İÇİN WEB SUNUCUSU
-# ───────────────────────────────────────────────
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot aktif ve ayakta!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = threading.Thread(target=run_web)
-    t.daemon = True
-    t.start()
 
 # ───────────────────────────────────────────────
 #  BOT YANITLARI VE MESAJLARI (Buradan kolayca değiştirebilirsin)
@@ -92,49 +70,58 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-bump_task = None
-
 # ───────────────────────────────────────────────
-#  BUMP ZAMANLAYICI VE GEÇMİŞ KONTROLÜ
+#  BUMP KONTROL DÖNGÜSÜ (HER 1 DAKİKADA BİR)
 # ───────────────────────────────────────────────
 
-async def schedule_bump_in(seconds: float):
-    global bump_task
-    try:
-        await asyncio.sleep(seconds)
-        channel = bot.get_channel(BUMP_CHANNEL_ID)
-        if channel:
-            await channel.send(config["BUMP_MESSAGE"])
-            print("📢 Bump hatırlatma mesajı gönderildi.")
-    except asyncio.CancelledError:
-        pass
-
-async def check_last_bump_and_schedule():
-    global bump_task
-    await asyncio.sleep(3) 
-    
+@tasks.loop(minutes=1)
+async def bump_check_loop():
     channel = bot.get_channel(BUMP_CHANNEL_ID)
     if not channel:
         return
 
     try:
-        async for message in channel.history(limit=50):
-            if message.author.id == BUMP_BOT_ID:
-                now = datetime.now(timezone.utc)
-                elapsed = (now - message.created_at).total_seconds()
-                two_hours = 2 * 60 * 60  
-                
-                if bump_task and not bump_task.done():
-                    bump_task.cancel()
+        messages = [msg async for msg in channel.history(limit=30)]
+        
+        # 1. En son Disboard mesajını bul
+        last_disboard_msg = None
+        for msg in messages:
+            if msg.author.id == BUMP_BOT_ID:
+                last_disboard_msg = msg
+                break
+        
+        if not last_disboard_msg:
+            return # Kanalda hiç Disboard mesajı yok
 
-                if elapsed >= two_hours:
-                    await channel.send(config["BUMP_MESSAGE"])
-                else:
-                    remaining = two_hours - elapsed
-                    bump_task = asyncio.ensure_future(schedule_bump_in(remaining))
-                return
+        # 2. Son Disboard mesajından sonra bizim botumuz hatırlatma atmış mı kontrol et
+        reminder_sent_after = False
+        for msg in messages:
+            if msg.id == last_disboard_msg.id:
+                break # Disboard mesajına ulaştıysak geçmişe gitmeyi bırak
+            if msg.author.id == bot.user.id:
+                reminder_sent_after = True
+                break
+
+        # Eğer bu bump için zaten hatırlatma atıldıysa tekrar atma
+        if reminder_sent_after:
+            return
+
+        # 3. Süreyi hesapla
+        now = datetime.now(timezone.utc)
+        elapsed = (now - last_disboard_msg.created_at).total_seconds()
+        two_hours = 2 * 60 * 60  
+
+        # 4. 2 saat dolmuşsa (veya bot kapalı kaldığı için süresi geçmişse) hemen yapıştır
+        if elapsed >= two_hours:
+            await channel.send(config["BUMP_MESSAGE"])
+            print("📢 2 saatlik süre doldu (veya geçmişti), bump hatırlatması gönderildi.")
+
     except Exception as e:
-        print(f"⚠️ Geçmiş kontrolü hatası: {e}")
+        print(f"⚠️ Bump döngüsü hatası: {e}")
+
+@bump_check_loop.before_loop
+async def before_bump_check():
+    await bot.wait_until_ready()
 
 # ───────────────────────────────────────────────
 #  EVENTS (OLAYLAR)
@@ -153,7 +140,9 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Senkronizasyon hatası: {e}")
 
-    asyncio.ensure_future(check_last_bump_and_schedule())
+    # Periyodik bump kontrol döngüsünü başlat
+    if not bump_check_loop.is_running():
+        bump_check_loop.start()
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -164,7 +153,6 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message):
-    global bump_task
     if message.author == bot.user:
         return
 
@@ -174,12 +162,6 @@ async def on_message(message: discord.Message):
         if message.attachments:
             for attachment in message.attachments:
                 await log_channel.send(f"📎 **{message.author.display_name}**", file=await attachment.to_file())
-
-    # Disboard Bump Algılama
-    if message.channel.id == BUMP_CHANNEL_ID and message.author.id == BUMP_BOT_ID:
-        if bump_task and not bump_task.done():
-            bump_task.cancel() 
-        bump_task = asyncio.ensure_future(schedule_bump_in(2 * 60 * 60))
 
     await bot.process_commands(message)
 
@@ -236,8 +218,23 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 if __name__ == "__main__":
     # Render web servisinin port gereksinimini karşılamak için Flask'i başlatıyoruz
-    keep_alive()
-    
+    from flask import Flask
+    import threading
+
+    app = Flask('')
+
+    @app.route('/')
+    def home():
+        return "Bot aktif ve ayakta!"
+
+    def run_web():
+        port = int(os.environ.get("PORT", 8080))
+        app.run(host='0.0.0.0', port=port)
+
+    t = threading.Thread(target=run_web)
+    t.daemon = True
+    t.start()
+
     if TOKEN:
         bot.run(TOKEN)
     else:
