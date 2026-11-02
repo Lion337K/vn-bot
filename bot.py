@@ -192,7 +192,6 @@ async def set_welcome(interaction: discord.Interaction, yeni_mesaj: str):
     await interaction.response.send_message(RESPONSES["setwelcome_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True)
 
 @bot.tree.command(name="setbump", description="Bump hatırlatma mesajını değiştirir.")
-@app_codes := None # placeholder check
 @app_commands.checks.has_permissions(administrator=True)
 async def set_bump(interaction: discord.Interaction, yeni_mesaj: str):
     config["BUMP_MESSAGE"] = yeni_mesaj
