@@ -72,23 +72,17 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ───────────────────────────────────────────────
-#  ORTAK BUMP KONTROL FONKSİYONU (DEBUG ÖZELLİKLİ)
+#  ORTAK BUMP KONTROL FONKSİYONU
 # ───────────────────────────────────────────────
 
-async def perform_bump_check(ctx_or_interaction=None):
+async def perform_bump_check():
     channel = bot.get_channel(BUMP_CHANNEL_ID)
     if not channel:
-        msg = "⚠️ HATA: BUMP_CHANNEL_ID bulunamadı veya bot bu kanalı görmüyor!"
-        print(msg)
-        return msg
-
-    print(f"🔍 [DEBUG] Bump taraması başlatıldı. Kanal: {channel.name} ({channel.id})")
+        print("⚠️ [DEBUG] BUMP_CHANNEL_ID bulunamadı!")
+        return "Kanal bulunamadı"
 
     try:
         messages = [msg async for msg in channel.history(limit=30)]
-        print(f"📦 [DEBUG] Kanaldan son {len(messages)} mesaj çekildi.")
-
-        # 1. En son Disboard mesajını bul
         last_disboard_msg = None
         for msg in messages:
             if msg.author.id == BUMP_BOT_ID:
@@ -96,13 +90,8 @@ async def perform_bump_check(ctx_or_interaction=None):
                 break
         
         if not last_disboard_msg:
-            msg = "📭 [DEBUG] Kanal geçmişinde Disboard botuna ait hiç mesaj bulunamadı."
-            print(msg)
-            return msg
+            return "Disboard mesajı yok"
 
-        print(f"🤖 [DEBUG] Son Disboard mesajı bulundu! Atılma Zamanı (UTC): {last_disboard_msg.created_at}")
-
-        # 2. Son Disboard mesajından sonra bizim botumuz hatırlatma atmış mı kontrol et
         reminder_sent_after = False
         for msg in messages:
             if msg.id == last_disboard_msg.id:
@@ -112,33 +101,22 @@ async def perform_bump_check(ctx_or_interaction=None):
                 break
 
         if reminder_sent_after:
-            msg = "✅ [DEBUG] Son Disboard mesajından sonra zaten hatırlatma atılmış. Bekleniyor..."
-            print(msg)
-            return msg
+            return "Zaten hatırlatma atılmış"
 
-        # 3. Süreyi hesapla
         now = datetime.now(timezone.utc)
         elapsed = (now - last_disboard_msg.created_at).total_seconds()
         two_hours = 2 * 60 * 60  
-        remaining = two_hours - elapsed
 
-        print(f"⏱️ [DEBUG] Geçen süre: {elapsed / 60:.1f} dakika. Kalan süre: {remaining / 60:.1f} dakika.")
-
-        # 4. 2 saat dolmuşsa (veya geçmişse) hemen hatırlat
         if elapsed >= two_hours:
             await channel.send(config["BUMP_MESSAGE"])
-            msg = "📢 [DEBUG] 2 saatlik süre dolmuş (veya geçmişti)! Hatırlatma mesajı gönderildi."
-            print(msg)
-            return msg
-        else:
-            msg = f"⏳ [DEBUG] Henüz 2 saat dolmamış. Kalan süre: {remaining / 60:.1f} dk."
-            print(msg)
-            return msg
+            print("📢 2 saatlik süre dolmuş! Hatırlatma gönderildi.")
+            return "Hatırlatma gönderildi"
+        
+        return "Süre henüz dolmadı"
 
     except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"❌ [DEBUG HATA] Bump kontrolünde patlama:\n{error_trace}")
-        return f"hata olustu: {e}"
+        print(f"❌ [DEBUG HATA] Bump kontrolü hatası: {e}")
+        return str(e)
 
 # ───────────────────────────────────────────────
 #  BUMP KONTROL DÖNGÜSÜ (HER 1 DAKİKADA BİR)
@@ -160,35 +138,31 @@ async def before_bump_check():
 async def on_ready():
     print(f"✅ Giriş yapıldı: {bot.user}")
     
-    # 1. ESKİ KOMUTLARI TEMİZLEME VE GÜNCEL OLANLARI YÜKLEME
+    # 1. Komut Senkronizasyonu (Hata verirse botu durdurmasın diye korumaya alındı)
     try:
         guild = discord.Object(id=GUILD_ID)
-        
-        # Sunucuya özel tüm eski komutları tamamen sıfırla
         bot.tree.clear_commands(guild=guild)
-        
-        # Mevcut komutları ağaca kopyala ve sadece bu sunucuya senkronize et (anında görünür)
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
-        print("✅ Eski slash komutları temizlendi ve güncel komutlar sunucuya senkronize edildi.")
+        print("✅ Komutlar başarıyla senkronize edildi.")
     except Exception as e:
-        print(f"⚠️ Senkronizasyon hatası: {e}")
+        print(f"⚠️ Komut senkronizasyon hatası: {e}")
 
-    # 2. BOTUN HAZIR OLDUĞUNU BELİRTEN "p" MESAJI (Log Kanalına)
-    log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
-    if log_channel:
-        try:
+    # 2. "p" Mesajı Gönderimi (Hata verirse loglansın)
+    try:
+        log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
+        if log_channel:
             await log_channel.send("p")
-            print("📤 Log kanalına 'p' mesajı başarıyla gönderildi.")
-        except Exception as e:
-            print(f"⚠️ Log kanalına 'p' mesajı gönderilemedi: {e}")
-    else:
-        print("⚠️ 'p' mesajı için belirlenen IMAGE_LOG_CHANNEL_ID bulunamadı!")
+            print("📤 Log kanalına 'p' mesajı gönderildi.")
+        else:
+            print("⚠️ IMAGE_LOG_CHANNEL_ID bulunamadı, 'p' atılamadı.")
+    except Exception as e:
+        print(f"⚠️ 'p' mesajı gönderilirken hata: {e}")
 
-    # 3. PERİYODİK BUMP KONTROLÜNÜ BAŞLAT
+    # 3. Döngüyü Başlat
     if not bump_check_loop.is_running():
         bump_check_loop.start()
-        print("🚀 Periyodik bump kontrol döngüsü (1 dk) başlatıldı.")
+        print("🚀 Periyodik bump döngüsü başlatıldı.")
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -202,7 +176,6 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # Medya Log Sistemi
     log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
     if log_channel and message.channel.id != IMAGE_LOG_CHANNEL_ID and not message.author.bot:
         if message.attachments:
