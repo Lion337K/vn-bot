@@ -4,7 +4,28 @@ from discord import app_commands
 import asyncio
 import os
 import json
+import threading
 from datetime import datetime, timezone
+from flask import Flask
+
+# ───────────────────────────────────────────────
+#  RENDER VE UPTIMEROBOT İÇİN WEB SUNUCUSU
+# ───────────────────────────────────────────────
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot aktif ve ayakta!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run_web)
+    t.daemon = True
+    t.start()
 
 # ───────────────────────────────────────────────
 #  BOT YANITLARI VE MESAJLARI (Buradan kolayca değiştirebilirsin)
@@ -98,7 +119,6 @@ async def check_last_bump_and_schedule():
 
     try:
         async for message in channel.history(limit=50):
-            # Doğrudan Disboard botunun attığı son mesaja bakıyoruz
             if message.author.id == BUMP_BOT_ID:
                 now = datetime.now(timezone.utc)
                 elapsed = (now - message.created_at).total_seconds()
@@ -155,7 +175,7 @@ async def on_message(message: discord.Message):
             for attachment in message.attachments:
                 await log_channel.send(f"📎 **{message.author.display_name}**", file=await attachment.to_file())
 
-    # Disboard Bump Algılama (Doğrudan Disboard botundan gelen mesaj baz alınır)
+    # Disboard Bump Algılama
     if message.channel.id == BUMP_CHANNEL_ID and message.author.id == BUMP_BOT_ID:
         if bump_task and not bump_task.done():
             bump_task.cancel() 
@@ -215,6 +235,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(RESPONSES["err_generic"].format(error=error), ephemeral=True)
 
 if __name__ == "__main__":
+    # Render web servisinin port gereksinimini karşılamak için Flask'i başlatıyoruz
+    keep_alive()
+    
     if TOKEN:
         bot.run(TOKEN)
     else:
