@@ -98,16 +98,8 @@ async def check_last_bump_and_schedule():
 
     try:
         async for message in channel.history(limit=50):
-            is_target = False
+            # Doğrudan Disboard botunun attığı son mesaja bakıyoruz
             if message.author.id == BUMP_BOT_ID:
-                if message.embeds:
-                    embed_text = "".join([embed.description or "" for embed in message.embeds]).lower()
-                    if "bump done" in embed_text or "başarılı" in embed_text or "👍" in embed_text:
-                        is_target = True
-                elif "bump done" in message.content.lower() or "başarılı" in message.content.lower() or "👍" in message.content:
-                    is_target = True
-            
-            if is_target:
                 now = datetime.now(timezone.utc)
                 elapsed = (now - message.created_at).total_seconds()
                 two_hours = 2 * 60 * 60  
@@ -163,20 +155,11 @@ async def on_message(message: discord.Message):
             for attachment in message.attachments:
                 await log_channel.send(f"📎 **{message.author.display_name}**", file=await attachment.to_file())
 
-    # Disboard Bump Algılama
+    # Disboard Bump Algılama (Doğrudan Disboard botundan gelen mesaj baz alınır)
     if message.channel.id == BUMP_CHANNEL_ID and message.author.id == BUMP_BOT_ID:
-        is_bump_success = False
-        if message.embeds:
-            embed_text = "".join([embed.description or "" for embed in message.embeds]).lower()
-            if "bump done" in embed_text or "başarılı" in embed_text or "👍" in embed_text:
-                is_bump_success = True
-        elif "bump done" in message.content.lower() or "başarılı" in message.content.lower() or "👍" in message.content:
-            is_bump_success = True
-            
-        if is_bump_success:
-            if bump_task and not bump_task.done():
-                bump_task.cancel() 
-            bump_task = asyncio.ensure_future(schedule_bump_in(2 * 60 * 60))
+        if bump_task and not bump_task.done():
+            bump_task.cancel() 
+        bump_task = asyncio.ensure_future(schedule_bump_in(2 * 60 * 60))
 
     await bot.process_commands(message)
 
