@@ -3,11 +3,13 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import os
 import json
-import traceback
+import threading
 from datetime import datetime, timezone
+import sys
+sys.stdout.reconfigure(line_buffering=True)
 
 # ───────────────────────────────────────────────
-#  BOT YANITLARI VE MESAJLARI (Buradan kolayca değiştirebilirsin)
+#  BOT YANITLARI VE MESAJLARI
 # ───────────────────────────────────────────────
 
 RESPONSES = {
@@ -20,7 +22,7 @@ RESPONSES = {
     "sendmsg_error": "❌ Hata oluştu: {error}",
     "err_missing_permissions": "yetkin yok kullanamazsin.",
     "err_cooldown": "yavasla biraz. {retry_after} saniye sonra bidaha dene.",
-    "err_generic": "hata olustu: {error}"
+    "err_generic": "hata olustu: {error}",
 }
 
 # ───────────────────────────────────────────────
@@ -34,30 +36,37 @@ WELCOME_CHANNEL_ID   = 1480314604713414757
 BUMP_CHANNEL_ID      = 1517972647126761624
 IMAGE_LOG_CHANNEL_ID = 1480317488456536166
 
-BUMP_BOT_ID          = 302050872383242240 
-CONFIG_FILE          = "config.json"
+BUMP_BOT_ID = 302050872383242240  # Disboard
+CONFIG_FILE = "config.json"
 
 # ───────────────────────────────────────────────
-#  DİNAMİK MESAJ SİSTEMİ (JSON KONTROLÜ)
+#  CONFIG (JSON)
 # ───────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
     "WELCOME_MESSAGE": RESPONSES["welcome_message"],
-    "BUMP_MESSAGE": RESPONSES["bump_message"]
+    "BUMP_MESSAGE": RESPONSES["bump_message"],
 }
 
+
 def load_config():
+    data = DEFAULT_CONFIG.copy()
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data.update(json.load(f))
         except Exception as e:
             print(f"⚠️ Config dosyası okunamadı: {e}")
-    return DEFAULT_CONFIG.copy()
+    return data
+
 
 def save_config(config_data):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config_data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"⚠️ Config kaydedilemedi: {e}")
+
 
 config = load_config()
 
@@ -66,160 +75,184 @@ config = load_config()
 # ───────────────────────────────────────────────
 
 intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
+intents.members = True          # Developer Portal'da da açık olmalı
+intents.message_content = True  # Developer Portal'da da açık olmalı
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        # Slash komutları sadece bir kez, bot bağlanırken senkronize edilir
+        guild = discord.Object(id=GUILD_ID)
+        self.tree.copy_global_to(guild=guild)
+        try:
+            synced = await self.tree.sync(guild=guild)
+            print(f"✅ {len(synced)} komut senkronize edildi.")
+        except Exception as e:
+            print(f"⚠️ Komut senkronizasyon hatası: {e}")
+
+        bump_check_loop.start()
+
+
+bot = MyBot(command_prefix="!", intents=intents)
 
 # ───────────────────────────────────────────────
-#  ORTAK BUMP KONTROL FONKSİYONU
+#  BUMP KONTROL
 # ───────────────────────────────────────────────
+
 
 async def perform_bump_check():
     channel = bot.get_channel(BUMP_CHANNEL_ID)
-    if not channel:
-        print("⚠️ [DEBUG] BUMP_CHANNEL_ID bulunamadı!")
-        return "Kanal bulunamadı"
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(BUMP_CHANNEL_ID)
+        except Exception as e:
+            print(f"⚠️ Bump kanalı bulunamadı: {e}")
+            return "Kanal bulunamadı (ID yanlış veya bot kanalı göremiyor)"
 
     try:
         messages = [msg async for msg in channel.history(limit=30)]
-        last_disboard_msg = None
-        for msg in messages:
-            if msg.author.id == BUMP_BOT_ID:
-                last_disboard_msg = msg
-                break
-        
+
+        last_disboard_msg = next(
+            (m for m in messages if m.author.id == BUMP_BOT_ID), None
+        )
         if not last_disboard_msg:
             return "Disboard mesajı yok"
 
-        reminder_sent_after = False
-        for msg in messages:
+        # Disboard mesajından sonra bot hatırlatma attı mı?
+        for msg in messages:  # yeniden eskiye
             if msg.id == last_disboard_msg.id:
-                break 
-            if msg.author.id == bot.user.id:
-                reminder_sent_after = True
                 break
+            if msg.author.id == bot.user.id:
+                return "Zaten hatırlatma atılmış"
 
-        if reminder_sent_after:
-            return "Zaten hatırlatma atılmış"
+        elapsed = (datetime.now(timezone.utc) - last_disboard_msg.created_at).total_seconds()
 
-        now = datetime.now(timezone.utc)
-        elapsed = (now - last_disboard_msg.created_at).total_seconds()
-        two_hours = 2 * 60 * 60  
-
-        if elapsed >= two_hours:
+        if elapsed >= 2 * 60 * 60:
             await channel.send(config["BUMP_MESSAGE"])
             print("📢 2 saatlik süre dolmuş! Hatırlatma gönderildi.")
             return "Hatırlatma gönderildi"
-        
-        return "Süre henüz dolmadı"
 
+        kalan = int((2 * 60 * 60 - elapsed) / 60)
+        return f"Süre henüz dolmadı (~{kalan} dk kaldı)"
+
+    except discord.Forbidden:
+        return "Yetki hatası: botun kanalda 'Kanalı Gör', 'Mesaj Geçmişini Oku' ve 'Mesaj Gönder' yetkisi olmalı"
     except Exception as e:
-        print(f"❌ [DEBUG HATA] Bump kontrolü hatası: {e}")
+        print(f"❌ Bump kontrolü hatası: {e}")
         return str(e)
 
-# ───────────────────────────────────────────────
-#  BUMP KONTROL DÖNGÜSÜ (HER 1 DAKİKADA BİR)
-# ───────────────────────────────────────────────
 
 @tasks.loop(minutes=1)
 async def bump_check_loop():
     await perform_bump_check()
+
 
 @bump_check_loop.before_loop
 async def before_bump_check():
     await bot.wait_until_ready()
 
 # ───────────────────────────────────────────────
-#  EVENTS (OLAYLAR)
+#  EVENTS
 # ───────────────────────────────────────────────
+
 
 @bot.event
 async def on_ready():
-    print(f"✅ Giriş yapıldı: {bot.user}")
-    
-    # 1. Komut Senkronizasyonu (Hata verirse botu durdurmasın diye korumaya alındı)
-    try:
-        guild = discord.Object(id=GUILD_ID)
-        bot.tree.clear_commands(guild=guild)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print("✅ Komutlar başarıyla senkronize edildi.")
-    except Exception as e:
-        print(f"⚠️ Komut senkronizasyon hatası: {e}")
+    print(f"✅ Giriş yapıldı: {bot.user} (ID: {bot.user.id})")
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        print("⚠️ Bot GUILD_ID'deki sunucuda değil veya ID yanlış!")
 
-    # 2. "p" Mesajı Gönderimi (Hata verirse loglansın)
-    try:
-        log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
-        if log_channel:
-            await log_channel.send("p")
-            print("📤 Log kanalına 'p' mesajı gönderildi.")
-        else:
-            print("⚠️ IMAGE_LOG_CHANNEL_ID bulunamadı, 'p' atılamadı.")
-    except Exception as e:
-        print(f"⚠️ 'p' mesajı gönderilirken hata: {e}")
-
-    # 3. Döngüyü Başlat
-    if not bump_check_loop.is_running():
-        bump_check_loop.start()
-        print("🚀 Periyodik bump döngüsü başlatıldı.")
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    if member.guild.id != GUILD_ID:
+        return
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
     if channel:
-        msg = config["WELCOME_MESSAGE"].replace("{member}", member.mention)
-        await channel.send(msg)
+        try:
+            msg = config["WELCOME_MESSAGE"].replace("{member}", member.mention)
+            await channel.send(msg)
+        except Exception as e:
+            print(f"⚠️ Karşılama mesajı gönderilemedi: {e}")
+    else:
+        print("⚠️ WELCOME_CHANNEL_ID bulunamadı!")
+
 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
-    if log_channel and message.channel.id != IMAGE_LOG_CHANNEL_ID and not message.author.bot:
-        if message.attachments:
+    if (
+        message.attachments
+        and not message.author.bot
+        and message.channel.id != IMAGE_LOG_CHANNEL_ID
+    ):
+        log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
+        if log_channel:
             for attachment in message.attachments:
-                await log_channel.send(f"📎 **{message.author.display_name}**", file=await attachment.to_file())
+                try:
+                    await log_channel.send(
+                        f"📎 **{message.author.display_name}**",
+                        file=await attachment.to_file(),
+                    )
+                except Exception as e:
+                    print(f"⚠️ Ek log kanalına gönderilemedi: {e}")
 
     await bot.process_commands(message)
 
 # ───────────────────────────────────────────────
-#  SLASH COMMANDS (YÖNETİCİ KOMUTLARI)
+#  SLASH COMMANDS
 # ───────────────────────────────────────────────
+
 
 @bot.tree.command(name="setwelcome", description="Hoş geldin mesajını değiştirir. ({member} etiketi kullanabilirsiniz)")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome(interaction: discord.Interaction, yeni_mesaj: str):
     config["WELCOME_MESSAGE"] = yeni_mesaj
     save_config(config)
-    await interaction.response.send_message(RESPONSES["setwelcome_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True)
+    await interaction.response.send_message(
+        RESPONSES["setwelcome_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True
+    )
+
 
 @bot.tree.command(name="setbump", description="Bump hatırlatma mesajını değiştirir.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_bump(interaction: discord.Interaction, yeni_mesaj: str):
     config["BUMP_MESSAGE"] = yeni_mesaj
     save_config(config)
-    await interaction.response.send_message(RESPONSES["setbump_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True)
+    await interaction.response.send_message(
+        RESPONSES["setbump_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True
+    )
+
 
 @bot.tree.command(name="testwelcome", description="Hoş geldin mesajını test et.")
 @app_commands.checks.has_permissions(administrator=True)
 async def test_welcome(interaction: discord.Interaction):
     msg = config["WELCOME_MESSAGE"].replace("{member}", interaction.user.mention)
-    await interaction.response.send_message(msg, ephemeral=False)
+    await interaction.response.send_message(msg)
+
 
 @bot.tree.command(name="sendmsg", description="Belirli bir kanala mesaj gönder.")
 @app_commands.checks.has_permissions(administrator=True)
 async def send_msg(interaction: discord.Interaction, channel_id: str, message: str):
     try:
-        target_channel = bot.get_channel(int(channel_id))
-        if not target_channel:
-            await interaction.response.send_message(RESPONSES["sendmsg_not_found"], ephemeral=True)
-            return
-        await target_channel.send(message)
+        target = bot.get_channel(int(channel_id))
+        if target is None:
+            target = await bot.fetch_channel(int(channel_id))
+    except Exception:
+        await interaction.response.send_message(RESPONSES["sendmsg_not_found"], ephemeral=True)
+        return
+
+    try:
+        await target.send(message)
         await interaction.response.send_message(RESPONSES["sendmsg_success"], ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(RESPONSES["sendmsg_error"].format(error=e), ephemeral=True)
+        await interaction.response.send_message(
+            RESPONSES["sendmsg_error"].format(error=e), ephemeral=True
+        )
+
 
 @bot.tree.command(name="checkbump", description="Bump durumunu ve zamanlayıcıyı manuel test eder (Debug).")
 @app_commands.checks.has_permissions(administrator=True)
@@ -232,35 +265,45 @@ async def check_bump(interaction: discord.Interaction):
 #  HATA YAKALAYICI
 # ───────────────────────────────────────────────
 
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(RESPONSES["err_missing_permissions"], ephemeral=True)
+        msg = RESPONSES["err_missing_permissions"]
     elif isinstance(error, app_commands.CommandOnCooldown):
         msg = RESPONSES["err_cooldown"].format(retry_after=round(error.retry_after, 1))
-        await interaction.response.send_message(msg, ephemeral=True)
     else:
-        await interaction.response.send_message(RESPONSES["err_generic"].format(error=error), ephemeral=True)
+        print(f"❌ Komut hatası: {error!r}")
+        msg = RESPONSES["err_generic"].format(error=error)
 
-if __name__ == "__main__":
+    # Cevap zaten verilmişse (defer vb.) followup kullan
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+
+# ───────────────────────────────────────────────
+#  WEB SUNUCUSU (Render + UptimeRobot için)
+# ───────────────────────────────────────────────
+
+
+def run_web():
     from flask import Flask
-    import threading
 
-    app = Flask('')
+    app = Flask(__name__)
 
-    @app.route('/')
+    @app.route("/")
     def home():
         return "Bot aktif ve ayakta!"
 
-    def run_web():
-        port = int(os.environ.get("PORT", 8080))
-        app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-    t = threading.Thread(target=run_web)
-    t.daemon = True
-    t.start()
 
-    if TOKEN:
-        bot.run(TOKEN)
+if __name__ == "__main__":
+    threading.Thread(target=run_web, daemon=True).start()
+
+    if not TOKEN:
+        print("HATA: DISCORD_TOKEN bulunamadı! Render > Environment kısmından ekle.")
     else:
-        print("HATA: DISCORD_TOKEN bulunamadı!")
+        bot.run(TOKEN)
