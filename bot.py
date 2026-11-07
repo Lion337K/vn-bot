@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import os
-import json
 import threading
 from datetime import datetime, timezone
 import sys
@@ -13,10 +12,8 @@ sys.stdout.reconfigure(line_buffering=True)
 # ───────────────────────────────────────────────
 
 RESPONSES = {
-    "welcome_message": "{member} aramıza katıldı fln filan 😒",
+    "welcome_message": "{member} aramiza katildi fln filan 😒",
     "bump_message": "buuuuump",
-    "setwelcome_success": "✨ Karşılama mesajı güncellendi:\n> {yeni_mesaj}",
-    "setbump_success": "⏳ Bump hatırlatma mesajı güncellendi:\n> {yeni_mesaj}",
     "sendmsg_not_found": "🌌 Böyle bir kanal bulunamadı.",
     "sendmsg_success": "🦋 Mesaj başarıyla gönderildi.",
     "sendmsg_error": "❌ Hata oluştu: {error}",
@@ -37,46 +34,29 @@ BUMP_CHANNEL_ID      = 1381771230964748370
 IMAGE_LOG_CHANNEL_ID = 1480317488456536166
 
 BUMP_BOT_ID = 302050872383242240  # Disboard
-CONFIG_FILE = "config.json"
+
+# Extensions used as a fallback when Discord doesn't send a content type
+MEDIA_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".avif",
+    ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v",
+)
 
 # ───────────────────────────────────────────────
-#  CONFIG (JSON)
+#  MESAJ AYARLARI (değiştirmek için yukarıdaki RESPONSES'u düzenle)
 # ───────────────────────────────────────────────
 
-DEFAULT_CONFIG = {
+config = {
     "WELCOME_MESSAGE": RESPONSES["welcome_message"],
     "BUMP_MESSAGE": RESPONSES["bump_message"],
 }
-
-
-def load_config():
-    data = DEFAULT_CONFIG.copy()
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data.update(json.load(f))
-        except Exception as e:
-            print(f"⚠️ Config dosyası okunamadı: {e}")
-    return data
-
-
-def save_config(config_data):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"⚠️ Config kaydedilemedi: {e}")
-
-
-config = load_config()
 
 # ───────────────────────────────────────────────
 #  BOT SETUP
 # ───────────────────────────────────────────────
 
 intents = discord.Intents.default()
-intents.members = True          # Developer Portal'da da açık olmalı
-intents.message_content = True  # Developer Portal'da da açık olmalı
+intents.members = True          # Developer Portal'da da açık olmalı (Server Members Intent)
+intents.message_content = True  # Developer Portal'da da açık olmalı (ek dosyaları görmek için de gerekli)
 
 
 class MyBot(commands.Bot):
@@ -96,21 +76,88 @@ class MyBot(commands.Bot):
 bot = MyBot(command_prefix="!", intents=intents)
 
 # ───────────────────────────────────────────────
+#  YARDIMCI FONKSİYONLAR
+# ───────────────────────────────────────────────
+
+
+async def get_channel_safe(channel_id: int):
+    """Cache'te yoksa API'den çekmeyi dener. Bulamazsa None döner."""
+    channel = bot.get_channel(channel_id)
+    if channel is not None:
+        return channel
+    try:
+        return await bot.fetch_channel(channel_id)
+    except Exception as e:
+        print(f"⚠️ Kanal {channel_id} alınamadı: {e!r}")
+        return None
+
+
+def is_media(attachment: discord.Attachment) -> bool:
+    content_type = (attachment.content_type or "").lower()
+    if content_type.startswith(("image/", "video/")):
+        return True
+    return attachment.filename.lower().endswith(MEDIA_EXTENSIONS)
+
+# ───────────────────────────────────────────────
+#  MEDYA LOG SİSTEMİ
+# ───────────────────────────────────────────────
+
+
+async def log_media(message: discord.Message):
+    media = [a for a in message.attachments if is_media(a)]
+    if not media:
+        return
+
+    log_channel = await get_channel_safe(IMAGE_LOG_CHANNEL_ID)
+    if log_channel is None:
+        print("⚠️ Log kanalı bulunamadı veya botun görme yetkisi yok.")
+        return
+
+    header = (
+        f"📎 **Gönderen:** {message.author.mention} (`{message.author}`)\n"
+        f"📍 **Kanal:** {message.channel.mention}\n"
+        f"🔗 {message.jump_url}"
+    )
+    no_pings = discord.AllowedMentions.none()
+    size_limit = log_channel.guild.filesize_limit
+
+    for attachment in media:
+        try:
+            if attachment.size > size_limit:
+                # Too big to re-upload, so link to the original instead
+                await log_channel.send(
+                    f"{header}\n⚠️ Dosya çok büyük, yeniden yüklenemedi: {attachment.url}",
+                    allowed_mentions=no_pings,
+                )
+            else:
+                await log_channel.send(
+                    header,
+                    file=await attachment.to_file(),
+                    allowed_mentions=no_pings,
+                )
+        except Exception as e:
+            print(f"⚠️ '{attachment.filename}' log kanalına gönderilemedi: {e!r}")
+            # Last resort: at least log who sent it and where, with the link
+            try:
+                await log_channel.send(
+                    f"{header}\n⚠️ Dosya yüklenemedi: {attachment.url}",
+                    allowed_mentions=no_pings,
+                )
+            except Exception as e2:
+                print(f"❌ Yedek log mesajı da gönderilemedi: {e2!r}")
+
+# ───────────────────────────────────────────────
 #  BUMP KONTROL
 # ───────────────────────────────────────────────
 
 
 async def perform_bump_check():
-    channel = bot.get_channel(BUMP_CHANNEL_ID)
+    channel = await get_channel_safe(BUMP_CHANNEL_ID)
     if channel is None:
-        try:
-            channel = await bot.fetch_channel(BUMP_CHANNEL_ID)
-        except Exception as e:
-            print(f"⚠️ Bump kanalı bulunamadı: {e}")
-            return "Kanal bulunamadı (ID yanlış veya bot kanalı göremiyor)"
+        return "Kanal bulunamadı (ID yanlış veya bot kanalı göremiyor)"
 
     try:
-        messages = [msg async for msg in channel.history(limit=30)]
+        messages = [msg async for msg in channel.history(limit=100)]
 
         last_disboard_msg = next(
             (m for m in messages if m.author.id == BUMP_BOT_ID), None
@@ -122,7 +169,7 @@ async def perform_bump_check():
         for msg in messages:  # yeniden eskiye
             if msg.id == last_disboard_msg.id:
                 break
-            if msg.author.id == bot.user.id:
+            if msg.author.id == bot.user.id and msg.content == config["BUMP_MESSAGE"]:
                 return "Zaten hatırlatma atılmış"
 
         elapsed = (datetime.now(timezone.utc) - last_disboard_msg.created_at).total_seconds()
@@ -162,21 +209,46 @@ async def on_ready():
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         print("⚠️ Bot GUILD_ID'deki sunucuda değil veya ID yanlış!")
+        return
+
+    # Startup self-check: reports missing channels/permissions in the logs
+    checks = {
+        "Karşılama kanalı": (WELCOME_CHANNEL_ID, ["view_channel", "send_messages"]),
+        "Log kanalı": (IMAGE_LOG_CHANNEL_ID, ["view_channel", "send_messages", "attach_files"]),
+        "Bump kanalı": (BUMP_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
+    }
+    for name, (channel_id, needed) in checks.items():
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            print(f"⚠️ {name} ({channel_id}) bulunamadı: ID yanlış ya da bot kanalı göremiyor.")
+            continue
+        perms = channel.permissions_for(guild.me)
+        missing = [p for p in needed if not getattr(perms, p)]
+        if missing:
+            print(f"⚠️ {name} (#{channel.name}) için eksik yetkiler: {', '.join(missing)}")
+        else:
+            print(f"✅ {name} (#{channel.name}) tamam.")
 
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    print(f"👋 Yeni üye: {member} (sunucu: {member.guild.id})")
     if member.guild.id != GUILD_ID:
         return
-    channel = bot.get_channel(WELCOME_CHANNEL_ID)
-    if channel:
-        try:
-            msg = config["WELCOME_MESSAGE"].replace("{member}", member.mention)
-            await channel.send(msg)
-        except Exception as e:
-            print(f"⚠️ Karşılama mesajı gönderilemedi: {e}")
-    else:
-        print("⚠️ WELCOME_CHANNEL_ID bulunamadı!")
+
+    channel = await get_channel_safe(WELCOME_CHANNEL_ID)
+    if channel is None:
+        print("⚠️ Karşılama kanalı bulunamadı veya botun görme yetkisi yok.")
+        return
+
+    try:
+        msg = config["WELCOME_MESSAGE"].replace("{member}", member.mention)
+        await channel.send(msg)
+        print("✅ Karşılama mesajı gönderildi.")
+    except discord.Forbidden:
+        print("⚠️ Karşılama mesajı gönderilemedi: botun kanalda 'Mesaj Gönder' yetkisi yok.")
+    except Exception as e:
+        print(f"⚠️ Karşılama mesajı gönderilemedi: {e!r}")
 
 
 @bot.event
@@ -185,46 +257,19 @@ async def on_message(message: discord.Message):
         return
 
     if (
-        message.attachments
+        message.guild is not None
+        and message.guild.id == GUILD_ID
         and not message.author.bot
         and message.channel.id != IMAGE_LOG_CHANNEL_ID
+        and message.attachments
     ):
-        log_channel = bot.get_channel(IMAGE_LOG_CHANNEL_ID)
-        if log_channel:
-            for attachment in message.attachments:
-                try:
-                    await log_channel.send(
-                        f"📎 **{message.author.display_name}**",
-                        file=await attachment.to_file(),
-                    )
-                except Exception as e:
-                    print(f"⚠️ Ek log kanalına gönderilemedi: {e}")
+        await log_media(message)
 
     await bot.process_commands(message)
 
 # ───────────────────────────────────────────────
 #  SLASH COMMANDS
 # ───────────────────────────────────────────────
-
-
-@bot.tree.command(name="setwelcome", description="Hoş geldin mesajını değiştirir. ({member} etiketi kullanabilirsiniz)")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_welcome(interaction: discord.Interaction, yeni_mesaj: str):
-    config["WELCOME_MESSAGE"] = yeni_mesaj
-    save_config(config)
-    await interaction.response.send_message(
-        RESPONSES["setwelcome_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True
-    )
-
-
-@bot.tree.command(name="setbump", description="Bump hatırlatma mesajını değiştirir.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_bump(interaction: discord.Interaction, yeni_mesaj: str):
-    config["BUMP_MESSAGE"] = yeni_mesaj
-    save_config(config)
-    await interaction.response.send_message(
-        RESPONSES["setbump_success"].format(yeni_mesaj=yeni_mesaj), ephemeral=True
-    )
 
 
 @bot.tree.command(name="testwelcome", description="Hoş geldin mesajını test et.")
@@ -238,10 +283,10 @@ async def test_welcome(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def send_msg(interaction: discord.Interaction, channel_id: str, message: str):
     try:
-        target = bot.get_channel(int(channel_id))
-        if target is None:
-            target = await bot.fetch_channel(int(channel_id))
-    except Exception:
+        target = await get_channel_safe(int(channel_id))
+    except ValueError:
+        target = None
+    if target is None:
         await interaction.response.send_message(RESPONSES["sendmsg_not_found"], ephemeral=True)
         return
 
