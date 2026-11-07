@@ -43,7 +43,7 @@ RESPONSES = {
     "kose_record_saved": "✅ Köşe kaydı log kanalına yazıldı: {category}",
     "kose_record_prefix_warning": "\n⚠️ Rol adı `[owner] - ` ile başlamıyor, yine de kaydedildi.",
     "kose_record_error": "❌ Kayıt yazılamadı: {error}",
-    "kose_welcome": "{member} köşen hazır! Bu kategoride mesaj silme ve sabitleme yetkin var ({role}).\nKomutların: `/koseisim` `/kanalisim` `/kanalaciklama` `/kosedurum` `/koseizin` `/koseban` `/koseunban` `/kosesil`",
+    "kose_welcome": "{member} köşen hazır! Bu kategoride mesaj silme ve sabitleme yetkin var ({role}).\nKomutların: `/koseisim` `/kanalisim` `/kanalaciklama` `/kosedurum` `/koseizin` `/kosemute` `/koseban` `/koseunban` `/kosesil`",
     "kose_rate_limited": "⏳ Discord çok sık değişikliğe izin vermiyor, birkaç dakika sonra tekrar dene.",
     "kose_no_permission": "❌ Botun bunu yapmaya yetkisi yok.",
     "kose_edit_error": "❌ Hata oluştu: {error}",
@@ -53,6 +53,11 @@ RESPONSES = {
     "kose_izin_already": "ℹ️ {member} zaten izinli.",
     "kose_izin_none": "ℹ️ {member} için verilmiş bir izin yok.",
     "kose_izin_banned": "❌ {member} engelli. Önce `/koseunban` ile engeli kaldır.",
+    "kose_mute_invalid": "❌ Kendini, bir botu ya da köşe sahibini susturamazsın.",
+    "kose_mute_done": "🔇 {member} artık köşende yazamaz (kanalları görmeye devam eder).",
+    "kose_mute_already": "ℹ️ {member} zaten susturulmuş.",
+    "kose_unmute_done": "🔊 {member} köşende tekrar yazabilir.",
+    "kose_unmute_not_muted": "ℹ️ {member} zaten susturulmuş değil.",
     "kose_category_renamed": "✅ Köşe adı güncellendi: **{name}**",
     "kose_channel_renamed": "✅ Kanal adı güncellendi: {channel}",
     "kose_channel_unsupported": "❌ Bu kanal türü bu komut için desteklenmiyor.",
@@ -138,6 +143,14 @@ KOSE_RECORD_RE = re.compile(r"KOSE_DATA owner=(\d+) role=(\d+) category=(\d+) te
 KOSE_DELETED_RE = re.compile(r"KOSE_DELETED category=(\d+)")
 
 NO_PINGS = discord.AllowedMentions.none()
+
+# /kosemute'un kaldırdığı yazma yetkileri (görme yetkisine dokunulmaz)
+MUTE_PERMS = (
+    "send_messages",
+    "send_messages_in_threads",
+    "create_public_threads",
+    "create_private_threads",
+)
 
 # ───────────────────────────────────────────────
 #  BOT SETUP
@@ -1232,6 +1245,57 @@ async def kose_izin(
         timeout=60,
     )
     key = "kose_izin_removed" if removing else "kose_izin_given"
+    await interaction.followup.send(
+        error or RESPONSES[key].format(member=kullanici.mention), ephemeral=True
+    )
+
+
+@bot.tree.command(name="kosemute", description="Bir kişinin köşende yazmasını engeller (kanalları görmeye devam eder).")
+@app_commands.describe(kullanici="Susturulacak kişi", islem="mute (varsayılan) ya da unmute")
+@app_commands.choices(islem=[
+    app_commands.Choice(name="mute", value="mute"),
+    app_commands.Choice(name="unmute", value="unmute"),
+])
+@kose_owner_only()
+async def kose_mute(
+    interaction: discord.Interaction,
+    kullanici: discord.Member,
+    islem: Optional[app_commands.Choice[str]] = None,
+):
+    _, category, record = current_kose(interaction)
+    guild = interaction.guild
+    unmuting = islem is not None and islem.value == "unmute"
+    owner_role = guild.get_role(record["role_id"])
+
+    if (
+        kullanici.bot
+        or kullanici.id == interaction.user.id
+        or kullanici.id == record["owner_id"]
+        or (owner_role is not None and owner_role in kullanici.roles)
+    ):
+        await interaction.response.send_message(RESPONSES["kose_mute_invalid"], ephemeral=True)
+        return
+
+    muted_now = category.overwrites_for(kullanici).send_messages is False
+    if unmuting and not muted_now:
+        await interaction.response.send_message(
+            RESPONSES["kose_unmute_not_muted"].format(member=kullanici.mention), ephemeral=True
+        )
+        return
+    if not unmuting and muted_now:
+        await interaction.response.send_message(
+            RESPONSES["kose_mute_already"].format(member=kullanici.mention), ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    value = None if unmuting else False
+    perms = {name: value for name in MUTE_PERMS}
+    error = await run_guarded(
+        apply_to_kose(category, lambda ov: tweak_overwrite(ov, kullanici, **perms)),
+        timeout=60,
+    )
+    key = "kose_unmute_done" if unmuting else "kose_mute_done"
     await interaction.followup.send(
         error or RESPONSES[key].format(member=kullanici.mention), ephemeral=True
     )
