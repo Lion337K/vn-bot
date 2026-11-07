@@ -4,6 +4,7 @@ from discord import app_commands
 import os
 import re
 import threading
+from typing import Optional
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 import sys
@@ -37,6 +38,10 @@ RESPONSES = {
     "kose_denied": "❌ {member} için köşe isteği reddedildi ({mod})",
     "kose_user_missing": "⚠️ {member} sunucuda değil, istek iptal edildi.",
     "kose_create_failed": "⚠️ {member} için köşe oluşturulamadı: {error}",
+    "kose_record_missing": "⚠️ Bu kategori için daha önce kayıt yok. İlk kayıtta sahip ve rol de girilmeli.",
+    "kose_record_saved": "✅ Köşe kaydı log kanalına yazıldı: {category}",
+    "kose_record_prefix_warning": "\n⚠️ Rol adı `[owner] - ` ile başlamıyor, yine de kaydedildi.",
+    "kose_record_error": "❌ Kayıt yazılamadı: {error}",
     "kose_welcome": "{member} köşen hazır! Bu kategoride mesaj silme ve sabitleme yetkin var ({role}).",
 }
 
@@ -57,7 +62,10 @@ KOSE_REQUEST_CHANNEL_ID = 1568573627543068762   # moderatör onay kanalı
 BUMP_BOT_ID = 302050872383242240  # Disboard
 
 OWNER_ROLE_PREFIX = "[owner] - "
-KOSE_TOPIC_TAG = "KOSE_OWNER_ROLE"   # köşenin metin kanalı konusuna yazılır
+KOSE_CATEGORY_EMOJI = "❤️"          # köşe kategorilerini ayırt etmek için
+KOSE_DATA_CHANNEL_ID = 1568588462884520066  # köşe kayıtlarının yazıldığı kanal
+KOSE_RECORD_SCAN_LIMIT = 3000       # açılışta kayıtlar için geriye doğru taranacak mesaj sayısı
+KOSE_RECORD_TITLE = "🏡 **Köşe kaydı**"
 APPROVE_EMOJI = "✅"
 DENY_EMOJI = "❌"
 
@@ -86,13 +94,14 @@ config = {
 # ───────────────────────────────────────────────
 
 gif_logged = set()         # GIF'i loglanmış mesaj id'leri (çift loglamayı önler)
+kose_records = {}          # kategori id -> {"owner_id", "role_id", "text_id", "voice_id"}
 pending_requests = {}      # kullanıcı id -> istek mesajı id
 handled_requests = set()   # işlenmiş istek mesajı id'leri (çift onayı önler)
 
 # İstek mesajını tanımak için şablondan regex üret
 _req_prefix, _req_suffix = RESPONSES["kose_request_message"].split("{member}")
 REQUEST_RE = re.compile(re.escape(_req_prefix) + r"<@!?(\d+)>" + re.escape(_req_suffix))
-KOSE_TOPIC_RE = re.compile(KOSE_TOPIC_TAG + r":(\d+)")
+KOSE_RECORD_RE = re.compile(r"KOSE_DATA owner=(\d+) role=(\d+) category=(\d+) text=(\d+) voice=(\d+)")
 
 NO_PINGS = discord.AllowedMentions.none()
 
@@ -274,17 +283,23 @@ def owner_overwrite() -> discord.PermissionOverwrite:
         return discord.PermissionOverwrite(manage_messages=True)
 
 
-def get_kose_owner_role(channel):
-    """Bir kanalın bulunduğu köşenin [owner] rolünü döndürür (köşe değilse None)."""
-    category = getattr(channel, "category", None)
+def get_kose_record(channel):
+    """Kanalın bulunduğu köşenin kaydını döndürür (köşe değilse None)."""
+    if isinstance(channel, discord.CategoryChannel):
+        category = channel
+    else:
+        category = getattr(channel, "category", None)
     if category is None:
         return None
-    for text_channel in category.text_channels:
-        if text_channel.topic:
-            match = KOSE_TOPIC_RE.search(text_channel.topic)
-            if match:
-                return channel.guild.get_role(int(match.group(1)))
-    return None
+    return kose_records.get(category.id)
+
+
+def get_kose_owner_role(channel):
+    """Bir kanalın bulunduğu köşenin [owner] rolünü döndürür (köşe değilse None)."""
+    record = get_kose_record(channel)
+    if record is None:
+        return None
+    return channel.guild.get_role(record["role_id"])
 
 
 def is_kose_owner(member: discord.Member, channel) -> bool:
@@ -308,6 +323,57 @@ def kose_owner_only():
     return app_commands.check(predicate)
 
 
+async def save_kose_record(owner_id: int, role_id: int, category_id: int, text_id: int = 0, voice_id: int = 0):
+    """Köşe bilgilerini log kanalına yeni bir mesaj olarak yazar ve belleği günceller."""
+    channel = await get_channel_safe(KOSE_DATA_CHANNEL_ID)
+    if channel is None:
+        raise RuntimeError("köşe kayıt kanalı bulunamadı")
+
+    def ch(channel_id: int) -> str:
+        return f"<#{channel_id}>" if channel_id else "—"
+
+    content = (
+        f"{KOSE_RECORD_TITLE}\n"
+        f"Sahip: <@{owner_id}> (`{owner_id}`)\n"
+        f"Rol: <@&{role_id}> (`{role_id}`)\n"
+        f"Kategori: <#{category_id}> (`{category_id}`)\n"
+        f"Metin: {ch(text_id)} (`{text_id}`) • Ses: {ch(voice_id)} (`{voice_id}`)\n"
+        f"`KOSE_DATA owner={owner_id} role={role_id} category={category_id} text={text_id} voice={voice_id}`"
+    )
+    await channel.send(content, allowed_mentions=NO_PINGS)
+    kose_records[category_id] = {
+        "owner_id": owner_id,
+        "role_id": role_id,
+        "text_id": text_id,
+        "voice_id": voice_id,
+    }
+
+
+async def load_kose_records():
+    """Açılışta kayıt kanalındaki köşe kayıtlarını okur. Aynı kategori için en yeni kayıt geçerlidir."""
+    channel = await get_channel_safe(KOSE_DATA_CHANNEL_ID)
+    if channel is None:
+        return
+    kose_records.clear()
+    try:
+        async for msg in channel.history(limit=KOSE_RECORD_SCAN_LIMIT):
+            if msg.author.id != bot.user.id or not msg.content.startswith(KOSE_RECORD_TITLE):
+                continue
+            match = KOSE_RECORD_RE.search(msg.content)
+            if not match:
+                continue
+            owner_id, role_id, category_id, text_id, voice_id = (int(g) for g in match.groups())
+            kose_records.setdefault(category_id, {
+                "owner_id": owner_id,
+                "role_id": role_id,
+                "text_id": text_id,
+                "voice_id": voice_id,
+            })
+        print(f"✅ {len(kose_records)} köşe kaydı yüklendi.")
+    except Exception as e:
+        print(f"⚠️ Köşe kayıtları okunamadı: {e!r}")
+
+
 async def create_kose(guild: discord.Guild, member: discord.Member):
     """Rol + kategori + metin kanalı + ses kanalı oluşturur. Hata olursa geri alır."""
     if len(guild.channels) > 495:
@@ -327,21 +393,20 @@ async def create_kose(guild: discord.Guild, member: discord.Member):
         overwrites = {role: owner_overwrite()}
 
         category = await guild.create_category(
-            f"Köşe • {member.display_name[:60]}",
+            f"{KOSE_CATEGORY_EMOJI} Köşe • {member.display_name[:60]}",
             overwrites=overwrites,
             reason=f"Köşe: {member}",
         )
         created.append(category)
 
-        text_channel = await category.create_text_channel(
-            "sohbet",
-            topic=f"{KOSE_TOPIC_TAG}:{role.id} OWNER:{member.id}",
-            overwrites=overwrites,
-        )
+        text_channel = await category.create_text_channel("sohbet", overwrites=overwrites)
         created.append(text_channel)
 
         voice_channel = await category.create_voice_channel("ses", overwrites=overwrites)
         created.append(voice_channel)
+
+        # Rol <-> kategori bağlantısı log kanalına yazılır; yazılamazsa her şey geri alınır
+        await save_kose_record(member.id, role.id, category.id, text_channel.id, voice_channel.id)
 
         return text_channel, role
     except Exception:
@@ -643,6 +708,7 @@ async def on_ready():
         "Karşılama kanalı": (WELCOME_CHANNEL_ID, ["view_channel", "send_messages"]),
         "Log kanalı": (IMAGE_LOG_CHANNEL_ID, ["view_channel", "send_messages", "attach_files"]),
         "Bump kanalı": (BUMP_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
+        "Köşe kayıt kanalı": (KOSE_DATA_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
         "Köşe oluşturma kanalı": (KOSE_CREATE_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
         "Köşe istek kanalı": (KOSE_REQUEST_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history", "add_reactions"]),
     }
@@ -661,6 +727,7 @@ async def on_ready():
     # on_ready yeniden bağlanmalarda tekrar tetiklenir; köşe kurulumu bir kez yapılır
     if not kose_initialized:
         kose_initialized = True
+        await load_kose_records()
         await rebuild_pending_requests()
         await ensure_kose_panel()
 
@@ -756,6 +823,44 @@ async def send_msg(interaction: discord.Interaction, channel_id: str, message: s
         await interaction.response.send_message(
             RESPONSES["sendmsg_error"].format(error=e), ephemeral=True
         )
+
+
+@bot.tree.command(name="kosekaydet", description="Köşe bilgilerini (eksik id'leri) log kanalına yeni kayıt olarak yazar.")
+@app_commands.describe(
+    kategori="Köşe kategorisi",
+    sahip="Köşe sahibi (boş bırakırsan eski kayıttan alınır)",
+    rol="Köşenin [owner] rolü (boş bırakırsan eski kayıttan alınır)",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def kose_kaydet(
+    interaction: discord.Interaction,
+    kategori: discord.CategoryChannel,
+    sahip: Optional[discord.Member] = None,
+    rol: Optional[discord.Role] = None,
+):
+    old = kose_records.get(kategori.id, {})
+    owner_id = sahip.id if sahip else old.get("owner_id")
+    role_id = rol.id if rol else old.get("role_id")
+    if not owner_id or not role_id:
+        await interaction.response.send_message(RESPONSES["kose_record_missing"], ephemeral=True)
+        return
+
+    # Eksik kanal id'leri kategorinin içinden tamamlanır
+    text_id = old.get("text_id") or (kategori.text_channels[0].id if kategori.text_channels else 0)
+    voice_id = old.get("voice_id") or (kategori.voice_channels[0].id if kategori.voice_channels else 0)
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await save_kose_record(owner_id, role_id, kategori.id, text_id, voice_id)
+    except Exception as e:
+        await interaction.followup.send(RESPONSES["kose_record_error"].format(error=e), ephemeral=True)
+        return
+
+    reply = RESPONSES["kose_record_saved"].format(category=kategori.mention)
+    role_obj = interaction.guild.get_role(role_id)
+    if role_obj is None or not role_obj.name.startswith(OWNER_ROLE_PREFIX):
+        reply += RESPONSES["kose_record_prefix_warning"]
+    await interaction.followup.send(reply, ephemeral=True)
 
 
 @bot.tree.command(name="checkbump", description="Bump durumunu ve zamanlayıcıyı manuel test eder (Debug).")
