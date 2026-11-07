@@ -43,7 +43,7 @@ RESPONSES = {
     "kose_record_saved": "✅ Köşe kaydı log kanalına yazıldı: {category}",
     "kose_record_prefix_warning": "\n⚠️ Rol adı `[owner] - ` ile başlamıyor, yine de kaydedildi.",
     "kose_record_error": "❌ Kayıt yazılamadı: {error}",
-    "kose_welcome": "{member} köşen hazır! Bu kategoride mesaj silme ve sabitleme yetkin var ({role}).\nKomutların: `/koseisim` `/kanalisim` `/kanalaciklama` `/kosedurum` `/koseizin` `/kosemute` `/koseban` `/koseunban` `/kosesil`",
+    "kose_welcome": "{member} köşen hazır! Bu kategoride mesaj silme ve sabitleme yetkin var ({role}).\nKomutların: `/koseisim` `/kanalisim` `/kanalaciklama` `/kanaldurum` `/kanalslowmode` `/kosedurum` `/koseizin` `/kosemute` `/koseban` `/koseunban` `/kosesil`",
     "kose_rate_limited": "⏳ Discord çok sık değişikliğe izin vermiyor, birkaç dakika sonra tekrar dene.",
     "kose_no_permission": "❌ Botun bunu yapmaya yetkisi yok.",
     "kose_edit_error": "❌ Hata oluştu: {error}",
@@ -62,6 +62,11 @@ RESPONSES = {
     "kose_channel_renamed": "✅ Kanal adı güncellendi: {channel}",
     "kose_channel_unsupported": "❌ Bu kanal türü bu komut için desteklenmiyor.",
     "kose_topic_updated": "✅ Kanal açıklaması güncellendi.",
+    "kanal_durum_nsfw": "🔞 {channel} artık NSFW (yaş sınırlı) olarak işaretlendi.",
+    "kanal_durum_spoiler": "⚠️ {channel} artık spoiler kanalı (içerik, kullanıcılar görmeyi seçene kadar gizli).",
+    "kanal_durum_normal": "✅ {channel} normal haline döndü.",
+    "kanal_slowmode_set": "🐢 {channel} için yavaş mod {seconds} saniye olarak ayarlandı.",
+    "kanal_slowmode_off": "⚡ {channel} için yavaş mod kapatıldı.",
     "kose_hidden": "🙈 Köşen artık herkesten gizli.",
     "kose_shown": "👀 Köşen tekrar herkese açık.",
     "kose_already_hidden": "ℹ️ Köşen zaten gizli.",
@@ -106,6 +111,9 @@ KOSE_ANCHOR_CATEGORY_ID = 1568572007422099607   # köşeler bu kategorinin hemen
 KOSE_ARCHIVE_CATEGORY_ID = 1506352969719873687  # silinen köşelerin kanalları buraya taşınır
 APPROVE_EMOJI = "✅"
 DENY_EMOJI = "❌"
+
+KOSE_BUTTON_ID = "kose:create"  # sürümler arasında ASLA değiştirme
+SPOILER_CHANNEL_FLAG = 1 << 21   # Discord'un IS_SPOILER_CHANNEL kanal bayrağı (sadece nsfw kapalıyken açılabilir)
 
 # Extensions used as a fallback when Discord doesn't send a content type
 MEDIA_EXTENSIONS = (
@@ -712,30 +720,43 @@ class CreateKoseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        print(f"❌ Buton hatası: {error!r}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
+            else:
+                await interaction.response.send_message(RESPONSES["kose_request_error"], ephemeral=True)
+        except Exception:
+            pass
+
     @discord.ui.button(
         label=RESPONSES["kose_button_label"],
         style=discord.ButtonStyle.success,
-        custom_id="kose:create",
+        custom_id=KOSE_BUTTON_ID,
     )
     async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Önce hemen yanıt ver (3 saniye sınırı), sonra kontrolleri yap
+        await interaction.response.defer(ephemeral=True)
+
         member = interaction.user
-        if (
-            interaction.guild is None
-            or interaction.guild.id != GUILD_ID
-            or not isinstance(member, discord.Member)
-        ):
+        if interaction.guild is None or not isinstance(member, discord.Member):
+            await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
+            return
+        if interaction.guild.id != GUILD_ID:
+            print(f"⚠️ Yanlış sunucu: {interaction.guild.id} != {GUILD_ID}")
+            await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
             return
 
         if has_owner_role(member):
-            await interaction.response.send_message(RESPONSES["kose_already_owner"], ephemeral=True)
+            await interaction.followup.send(RESPONSES["kose_already_owner"], ephemeral=True)
             return
         if member.id in pending_requests:
-            await interaction.response.send_message(RESPONSES["kose_already_pending"], ephemeral=True)
+            await interaction.followup.send(RESPONSES["kose_already_pending"], ephemeral=True)
             return
 
         # Yeri hemen ayır (araya await girmeden) ki çift tıklama ikinci istek açmasın
         pending_requests[member.id] = 0
-        await interaction.response.defer(ephemeral=True)
 
         channel = await get_channel_safe(KOSE_REQUEST_CHANNEL_ID)
         if channel is None:
@@ -766,20 +787,42 @@ class CreateKoseView(discord.ui.View):
         await interaction.followup.send(RESPONSES["kose_request_sent"], ephemeral=True)
 
 
+def is_kose_panel(msg: discord.Message) -> bool:
+    """Mesaj botun gönderdiği köşe paneli mi? (metne ya da butonun custom_id'sine göre)"""
+    if msg.author.id != bot.user.id:
+        return False
+    if msg.content == RESPONSES["kose_panel_message"]:
+        return True
+    # Metni eski sürümde değişmiş panelleri de yakala
+    for row in msg.components:
+        for child in getattr(row, "children", []):
+            if getattr(child, "custom_id", None) == KOSE_BUTTON_ID:
+                return True
+    return False
+
+
 async def ensure_kose_panel():
-    """Oluşturma kanalında 'olustur' butonlu mesaj yoksa gönderir."""
+    """Her açılışta paneli yeni sürümün butonuyla yeniler; fazlalıkları siler."""
     channel = await get_channel_safe(KOSE_CREATE_CHANNEL_ID)
     if channel is None:
         print("⚠️ Köşe oluşturma kanalı bulunamadı.")
         return
     try:
-        async for msg in channel.history(limit=50):
-            if msg.author.id == bot.user.id and msg.content == RESPONSES["kose_panel_message"]:
-                return
-        await channel.send(RESPONSES["kose_panel_message"], view=CreateKoseView())
-        print("✅ Köşe paneli gönderildi.")
+        panels = [m async for m in channel.history(limit=50) if is_kose_panel(m)]
+        if panels:
+            keep, *extras = panels  # en yenisi kalır
+            await keep.edit(content=RESPONSES["kose_panel_message"], view=CreateKoseView())
+            for m in extras:
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+            print("✅ Köşe paneli yenilendi.")
+        else:
+            await channel.send(RESPONSES["kose_panel_message"], view=CreateKoseView())
+            print("✅ Köşe paneli gönderildi.")
     except Exception as e:
-        print(f"⚠️ Köşe paneli gönderilemedi: {e!r}")
+        print(f"⚠️ Köşe paneli güncellenemedi: {e!r}")
 
 
 async def rebuild_pending_requests():
@@ -1103,6 +1146,69 @@ async def kanal_aciklama(interaction: discord.Interaction, aciklama: app_command
     await interaction.response.defer(ephemeral=True)
     error = await run_guarded(channel.edit(topic=aciklama, reason=f"/kanalaciklama: {interaction.user}"))
     await interaction.followup.send(error or RESPONSES["kose_topic_updated"], ephemeral=True)
+
+
+async def set_content_mode(channel: discord.TextChannel, mode: str, reason: str):
+    """Kanalı nsfw / spoiler / normal yapar. Spoiler kanalı Discord'un gerçek ayarıdır (kanal bayrağı)."""
+    data = await bot.http.get_channel(channel.id)   # güncel bayraklar (diğer bayraklar korunur)
+    flags = int(data.get("flags", 0))
+    if mode == "spoiler":
+        flags |= SPOILER_CHANNEL_FLAG
+        nsfw = False
+    elif mode == "nsfw":
+        flags &= ~SPOILER_CHANNEL_FLAG
+        nsfw = True
+    else:
+        flags &= ~SPOILER_CHANNEL_FLAG
+        nsfw = False
+    route = discord.http.Route("PATCH", "/channels/{channel_id}", channel_id=channel.id)
+    await bot.http.request(route, json={"nsfw": nsfw, "flags": flags}, reason=reason)
+
+
+@bot.tree.command(name="kanaldurum", description="Komutu kullandığın kanalı nsfw, spoiler ya da normal olarak işaretler.")
+@app_commands.describe(durum="nsfw, spoiler ya da normal")
+@app_commands.choices(durum=[
+    app_commands.Choice(name="nsfw", value="nsfw"),
+    app_commands.Choice(name="spoiler", value="spoiler"),
+    app_commands.Choice(name="normal", value="normal"),
+])
+@kose_owner_only()
+async def kanal_durum(interaction: discord.Interaction, durum: app_commands.Choice[str]):
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message(RESPONSES["kose_channel_unsupported"], ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(
+        set_content_mode(channel, durum.value, f"/kanaldurum: {interaction.user}")
+    )
+    await interaction.followup.send(
+        error or RESPONSES[f"kanal_durum_{durum.value}"].format(channel=channel.mention),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="kanalslowmode", description="Komutu kullandığın kanalın yavaş modunu ayarlar (0 = kapat).")
+@app_commands.describe(saniye="Saniye cinsinden süre (0-21600, 0 = kapat)")
+@kose_owner_only()
+async def kanal_slowmode(interaction: discord.Interaction, saniye: app_commands.Range[int, 0, 21600]):
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message(RESPONSES["kose_channel_unsupported"], ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(
+        channel.edit(slowmode_delay=saniye, reason=f"/kanalslowmode: {interaction.user}")
+    )
+    if error:
+        await interaction.followup.send(error, ephemeral=True)
+        return
+    key = "kanal_slowmode_off" if saniye == 0 else "kanal_slowmode_set"
+    await interaction.followup.send(
+        RESPONSES[key].format(channel=channel.mention, seconds=saniye), ephemeral=True
+    )
 
 
 @bot.tree.command(name="kosedurum", description="Köşeni herkesten gizle ya da tekrar göster.")
