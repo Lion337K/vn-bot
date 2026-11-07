@@ -5,6 +5,7 @@ import os
 import re
 import threading
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -66,6 +67,11 @@ MEDIA_EXTENSIONS = (
     ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v",
 )
 
+# GIF linkleri (Discord'un GIF seçicisi bunları yollar) ve doğrudan .gif linkleri
+GIF_HOSTS = ("tenor.com", "giphy.com")
+URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+MAX_GIFS_PER_MESSAGE = 5
+
 # ───────────────────────────────────────────────
 #  MESAJ AYARLARI (değiştirmek için yukarıdaki RESPONSES'u düzenle)
 # ───────────────────────────────────────────────
@@ -79,6 +85,7 @@ config = {
 #  KÖŞE DURUMU (bellekte; yeniden başlatınca istek kanalından yeniden kurulur)
 # ───────────────────────────────────────────────
 
+gif_logged = set()         # GIF'i loglanmış mesaj id'leri (çift loglamayı önler)
 pending_requests = {}      # kullanıcı id -> istek mesajı id
 handled_requests = set()   # işlenmiş istek mesajı id'leri (çift onayı önler)
 
@@ -145,6 +152,14 @@ def is_media(attachment: discord.Attachment) -> bool:
 # ───────────────────────────────────────────────
 
 
+def log_header(message: discord.Message) -> str:
+    return (
+        f"📎 **Gönderen:** {message.author.mention} (`{message.author}`)\n"
+        f"📍 **Kanal:** {message.channel.mention}\n"
+        f"🔗 {message.jump_url}"
+    )
+
+
 async def log_media(message: discord.Message):
     media = [a for a in message.attachments if is_media(a)]
     if not media:
@@ -155,11 +170,7 @@ async def log_media(message: discord.Message):
         print("⚠️ Log kanalı bulunamadı veya botun görme yetkisi yok.")
         return
 
-    header = (
-        f"📎 **Gönderen:** {message.author.mention} (`{message.author}`)\n"
-        f"📍 **Kanal:** {message.channel.mention}\n"
-        f"🔗 {message.jump_url}"
-    )
+    header = log_header(message)
     size_limit = log_channel.guild.filesize_limit
 
     for attachment in media:
@@ -186,6 +197,58 @@ async def log_media(message: discord.Message):
                 )
             except Exception as e2:
                 print(f"❌ Yedek log mesajı da gönderilemedi: {e2!r}")
+
+
+def is_gif_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if any(host == h or host.endswith("." + h) for h in GIF_HOSTS):
+        return True
+    return parsed.path.lower().endswith(".gif")
+
+
+def collect_gif_urls(message: discord.Message) -> list:
+    """Mesajdaki GIF linklerini bulur: önce metindeki linkler, yoksa gifv embed'leri."""
+    urls = []
+    for url in URL_RE.findall(message.content or ""):
+        url = url.rstrip(".,;:!?)\"'")
+        if is_gif_url(url):
+            urls.append(url)
+    if not urls:
+        for embed in message.embeds:
+            if embed.url and (
+                embed.type == "gifv" or (embed.type == "image" and is_gif_url(embed.url))
+            ):
+                urls.append(embed.url)
+    return list(dict.fromkeys(urls))[:MAX_GIFS_PER_MESSAGE]
+
+
+async def log_gifs(message: discord.Message):
+    if message.id in gif_logged:
+        return
+    urls = collect_gif_urls(message)
+    if not urls:
+        return
+
+    log_channel = await get_channel_safe(IMAGE_LOG_CHANNEL_ID)
+    if log_channel is None:
+        print("⚠️ Log kanalı bulunamadı veya botun görme yetkisi yok.")
+        return
+
+    gif_logged.add(message.id)
+    if len(gif_logged) > 5000:
+        gif_logged.clear()
+
+    header = log_header(message)
+    for url in urls:
+        try:
+            # Link olarak atılır, Discord log kanalında GIF'i kendisi gösterir
+            await log_channel.send(f"{header}\n🎞️ **GIF:** {url}", allowed_mentions=NO_PINGS)
+        except Exception as e:
+            print(f"⚠️ GIF log kanalına gönderilemedi: {e!r}")
 
 # ───────────────────────────────────────────────
 #  KÖŞE SİSTEMİ
@@ -633,11 +696,35 @@ async def on_message(message: discord.Message):
         and message.guild.id == GUILD_ID
         and not message.author.bot
         and message.channel.id != IMAGE_LOG_CHANNEL_ID
-        and message.attachments
     ):
-        await log_media(message)
+        if message.attachments:
+            await log_media(message)
+        await log_gifs(message)
 
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
+    # Discord, link önizlemelerini (GIF embed'lerini) mesajdan sonra düzenleme olarak ekler
+    if payload.guild_id != GUILD_ID or payload.message_id in gif_logged:
+        return
+    if payload.channel_id == IMAGE_LOG_CHANNEL_ID:
+        return
+    embeds = payload.data.get("embeds") or []
+    if not any(e.get("type") in ("gifv", "image") for e in embeds):
+        return
+
+    channel = await get_channel_safe(payload.channel_id)
+    if channel is None:
+        return
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+    if message.author.bot:
+        return
+    await log_gifs(message)
 
 # ───────────────────────────────────────────────
 #  SLASH COMMANDS
