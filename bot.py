@@ -5,6 +5,7 @@ import asyncio
 import os
 import re
 import threading
+import time
 from typing import Optional
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -18,71 +19,67 @@ sys.stdout.reconfigure(line_buffering=True)
 RESPONSES = {
     "welcome_message": "{member} aramiza katildi fln filan 😒",
     "bump_message": "buuuuump",
+    "startup_message": "p",
     "sendmsg_not_found": "🌌 Böyle bir kanal bulunamadı.",
     "sendmsg_success": "🦋 Mesaj başarıyla gönderildi.",
     "sendmsg_error": "❌ Hata oluştu: {error}",
     "err_missing_permissions": "yetkin yok kullanamazsin.",
     "err_cooldown": "yavasla biraz. {retry_after} saniye sonra bidaha dene.",
     "err_generic": "hata olustu: {error}",
-    "err_not_kose_owner": "bu komutu sadece bu köşenin sahibi kullanabilir.",
+    "err_not_posting_owner": "bu komutu sadece bu posting kanalının sahibi kullanabilir.",
+    "err_not_voice_owner": "bu komutu sadece bu ses kanalının sahibi kullanabilir.",
+    "not_yours": "Bu butonlar sana ait değil.",
 
-    # ── Köşe sistemi ──
-    "kose_panel_message": "kose olusturmak icin tiklayin",
-    "kose_button_label": "olustur",
-    "kose_request_message": "{member} kose olusturmak istiyor, approvluyoz mu",
-    "kose_request_sent": "✅ İsteğin moderatörlere iletildi.",
-    "kose_already_pending": "⏳ Zaten bekleyen bir köşe isteğin var.",
-    "kose_already_owner": "🏡 Zaten bir köşen var.",
-    "kose_owner_exists": "⚠️ {member} zaten bir köşeye sahip, istek iptal edildi.",
-    "kose_request_error": "❌ İstek gönderilemedi, biraz sonra tekrar dene.",
-    "kose_approved": "✅ {member} için köşe onaylandı ({mod}) → {channel}",
-    "kose_denied": "❌ {member} için köşe isteği reddedildi ({mod})",
-    "kose_user_missing": "⚠️ {member} sunucuda değil, istek iptal edildi.",
-    "kose_create_failed": "⚠️ {member} için köşe oluşturulamadı: {error}",
-    "kose_record_missing": "⚠️ Bu kategori için daha önce kayıt yok. İlk kayıtta sahip ve rol de girilmeli.",
-    "kose_record_saved": "✅ Köşe kaydı log kanalına yazıldı: {category}",
-    "kose_record_prefix_warning": "\n⚠️ Rol adı `[owner] - ` ile başlamıyor, yine de kaydedildi.",
-    "kose_record_error": "❌ Kayıt yazılamadı: {error}",
-    "kose_welcome": "{member} köşen hazır! Bu kategoride mesaj silme ve sabitleme yetkin var ({role}).\nKomutların: `/koseisim` `/kanalisim` `/kanalaciklama` `/kanaldurum` `/kanalslowmode` `/kosedurum` `/koseizin` `/kosemute` `/koseban` `/koseunban` `/kosesil`",
-    "kose_rate_limited": "⏳ Discord çok sık değişikliğe izin vermiyor, birkaç dakika sonra tekrar dene.",
-    "kose_no_permission": "❌ Botun bunu yapmaya yetkisi yok.",
-    "kose_edit_error": "❌ Hata oluştu: {error}",
-    "kose_name_empty": "❌ Geçerli bir isim yaz.",
-    "kose_izin_given": "✅ {member} artık köşen gizliyken de kanalları görebilir.",
-    "kose_izin_removed": "✅ {member} için görme izni kaldırıldı.",
-    "kose_izin_already": "ℹ️ {member} zaten izinli.",
-    "kose_izin_none": "ℹ️ {member} için verilmiş bir izin yok.",
-    "kose_izin_banned": "❌ {member} engelli. Önce `/koseunban` ile engeli kaldır.",
-    "kose_mute_invalid": "❌ Kendini, bir botu ya da köşe sahibini susturamazsın.",
-    "kose_mute_done": "🔇 {member} artık köşende yazamaz (kanalları görmeye devam eder).",
-    "kose_mute_already": "ℹ️ {member} zaten susturulmuş.",
-    "kose_unmute_done": "🔊 {member} köşende tekrar yazabilir.",
-    "kose_unmute_not_muted": "ℹ️ {member} zaten susturulmuş değil.",
-    "kose_category_renamed": "✅ Köşe adı güncellendi: **{name}**",
-    "kose_channel_renamed": "✅ Kanal adı güncellendi: {channel}",
-    "kose_channel_unsupported": "❌ Bu kanal türü bu komut için desteklenmiyor.",
-    "kose_topic_updated": "✅ Kanal açıklaması güncellendi.",
-    "kanal_durum_nsfw": "🔞 {channel} artık NSFW (yaş sınırlı) olarak işaretlendi.",
-    "kanal_durum_spoiler": "⚠️ {channel} artık spoiler kanalı (içerik, kullanıcılar görmeyi seçene kadar gizli).",
-    "kanal_durum_normal": "✅ {channel} normal haline döndü.",
-    "kanal_slowmode_set": "🐢 {channel} için yavaş mod {seconds} saniye olarak ayarlandı.",
-    "kanal_slowmode_off": "⚡ {channel} için yavaş mod kapatıldı.",
-    "kose_hidden": "🙈 Köşen artık herkesten gizli.",
-    "kose_shown": "👀 Köşen tekrar herkese açık.",
-    "kose_already_hidden": "ℹ️ Köşen zaten gizli.",
-    "kose_already_visible": "ℹ️ Köşen zaten herkese açık.",
-    "kose_ban_invalid": "❌ Kendini, bir botu ya da köşe sahibini engelleyemezsin.",
-    "kose_ban_done": "🚫 {member} köşenden engellendi (köşen ondan gizlendi).",
-    "kose_ban_already": "ℹ️ {member} zaten engelli.",
-    "kose_unban_done": "✅ {member} için engel kaldırıldı.",
-    "kose_unban_not_banned": "ℹ️ {member} zaten engelli değil.",
-    "kose_delete_confirm": "⚠️ Köşen herkesten (senden de) gizlenip arşive taşınacak ve sahip rolün silinecek. Emin misin?",
-    "kose_delete_working": "⏳ Köşe arşive taşınıyor...",
-    "kose_delete_done": "🗑️ Köşe arşive taşındı. İstersen yeniden köşe isteyebilirsin.",
-    "kose_delete_cancelled": "↩️ Vazgeçildi.",
-    "kose_delete_unavailable": "❌ Arşiv kategorisi bulunamadı ya da dolu, köşe silinemedi.",
-    "kose_delete_error": "❌ Köşe silinirken hata oluştu: {error}",
-    "kose_not_yours": "Bu butonlar sana ait değil.",
+    # ── Ortak (posting + ses) ──
+    "rate_limited": "⏳ Discord çok sık değişikliğe izin vermiyor, birkaç dakika sonra tekrar dene.",
+    "no_permission": "❌ Botun bunu yapmaya yetkisi yok.",
+    "edit_error": "❌ Hata oluştu: {error}",
+    "target_invalid": "❌ Bu komut kendin ya da bir bot için kullanılamaz.",
+    "list_full": "❌ Liste dolu (en fazla {limit} kişi).",
+    "view_given": "✅ {member} artık kanalı görebilir.",
+    "view_already": "ℹ️ {member} zaten görme iznine sahip.",
+    "view_taken": "🚫 {member} artık kanalı göremez.",
+    "view_taken_already": "ℹ️ {member} zaten engelli.",
+
+    # ── Posting sistemi ──
+    "posting_panel_message": "posting olusturmak icin tiklayin",
+    "posting_button_label": "olustur",
+    "posting_created": "✅ Posting kanalın hazır: {channel}",
+    "posting_already_owner": "📮 Zaten bir posting kanalın var: {channel}",
+    "posting_creating": "⏳ Kanalın zaten oluşturuluyor, biraz bekle.",
+    "posting_create_error": "❌ Posting kanalı oluşturulamadı, biraz sonra tekrar dene.",
+    "posting_category_full": "❌ Posting kategorisi dolu, bir yönetici ile iletişime geç.",
+    "posting_not_ready": "⏳ Sistem hâlâ hazırlanıyor, birkaç saniye sonra tekrar dene.",
+    "posting_button_cooldown": "⏳ Çok hızlı tıklıyorsun, {seconds} saniye sonra tekrar dene.",
+    "posting_channel_unsupported": "❌ Bu komut bu kanal türünde kullanılamaz.",
+    "posting_desc_updated": "✅ Kanal açıklaması güncellendi.",
+    "posting_hidden": "🙈 Kanalın artık gizli (sen ve izin verdiklerin görebilir).",
+    "posting_shown": "👀 Kanalın tekrar herkese açık.",
+    "posting_already_hidden": "ℹ️ Kanal zaten gizli.",
+    "posting_already_visible": "ℹ️ Kanal zaten herkese açık.",
+    "posting_write_given": "✅ {member} artık kanalında yazabilir.",
+    "posting_write_already": "ℹ️ {member} zaten yazabiliyor.",
+    "posting_write_taken": "✅ {member} için yazma izni kaldırıldı.",
+    "posting_write_none": "ℹ️ {member} için verilmiş bir yazma izni yok.",
+    "posting_write_blocked": "❌ {member} engelli. Önce `/postizin ver` ile engeli kaldır.",
+    "posting_nsfw_on": "🔞 Kanal NSFW olarak işaretlendi.",
+    "posting_nsfw_off": "✅ Kanalın NSFW işareti kaldırıldı.",
+    "posting_nsfw_already_on": "ℹ️ Kanal zaten NSFW.",
+    "posting_nsfw_already_off": "ℹ️ Kanal zaten NSFW değil.",
+    "posting_delete_confirm": "⚠️ Posting kanalın kalıcı olarak silinecek. Emin misin?",
+    "posting_delete_working": "⏳ Posting siliniyor...",
+    "posting_delete_done": "🗑️ Posting silindi. İstersen yeniden oluşturabilirsin.",
+    "posting_delete_cancelled": "↩️ Vazgeçildi.",
+    "posting_delete_error": "❌ Posting silinirken hata oluştu: {error}",
+
+    # ── Ses kanalı sistemi ──
+    "voice_welcome": "{member} ses kanalın hazır! Komutların (bu kanalın yazı sohbetinde kullan): `/sesaciklama` `/sesdurum` `/sesizin`",
+    "voice_status_updated": "✅ Ses kanalı durumu güncellendi.",
+    "voice_hidden": "🙈 Ses kanalın artık gizli (sen ve izin verdiklerin görebilir).",
+    "voice_shown": "👀 Ses kanalın tekrar herkese açık.",
+    "voice_already_hidden": "ℹ️ Ses kanalı zaten gizli.",
+    "voice_already_visible": "ℹ️ Ses kanalı zaten herkese açık.",
+    "voice_channel_unsupported": "❌ Bu komut sadece ses kanalının yazı sohbetinde kullanılabilir.",
 }
 
 # ───────────────────────────────────────────────
@@ -92,33 +89,58 @@ RESPONSES = {
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID             = 1381768080610426930
-WELCOME_CHANNEL_ID   = 1488662459009994965
+WELCOME_CHANNEL_ID   = 1480314604713414757
 BUMP_CHANNEL_ID      = 1381771230964748370
-IMAGE_LOG_CHANNEL_ID = 1480317488456536166
-
-KOSE_CREATE_CHANNEL_ID  = 1568572421395718175   # "olustur" butonunun olduğu kanal
-KOSE_REQUEST_CHANNEL_ID = 1568573627543068762   # moderatör onay kanalı
+IMAGE_LOG_CHANNEL_ID = 1480317488456536166   # medya / dosya / GIF logları + açılış mesajı
 
 BUMP_BOT_ID = 302050872383242240  # Disboard
 
-OWNER_ROLE_PREFIX = "[owner] - "
-KOSE_CATEGORY_EMOJI = "❤️"          # köşe kategorilerini ayırt etmek için
-KOSE_DATA_CHANNEL_ID = 1568588462884520066  # köşe kayıtlarının yazıldığı kanal
-KOSE_RECORD_SCAN_LIMIT = 3000       # açılışta kayıtlar için geriye doğru taranacak mesaj sayısı
-KOSE_RECORD_TITLE = "🏡 **Köşe kaydı**"
-KOSE_DELETED_TITLE = "🗑️ **Köşe silindi**"
-KOSE_ANCHOR_CATEGORY_ID = 1568572007422099607   # köşeler bu kategorinin hemen altına dizilir
-KOSE_ARCHIVE_CATEGORY_ID = 1506352969719873687  # silinen köşelerin kanalları buraya taşınır
-APPROVE_EMOJI = "✅"
-DENY_EMOJI = "❌"
+# ── Posting sistemi ──
+POSTING_CREATE_CHANNEL_ID = 1522166468936990841   # "olustur" butonunun olduğu kanal
+POSTING_CATEGORY_ID       = 1566119110880788642   # posting kanalları bu kategoride açılır
+POSTING_DATA_CHANNEL_ID   = 1568588462884520066   # posting kayıtlarının yazıldığı kanal
+POSTING_BUTTON_ID         = "posting:create"      # sürümler arasında ASLA değiştirme
+POSTING_BUTTON_COOLDOWN   = 30      # aynı kişi butona en erken kaç saniye sonra tekrar basabilir
+POSTING_RECORD_TITLE      = "📮 **Posting kaydı**"
+POSTING_DELETED_TITLE     = "🗑️ **Posting silindi**"
+POSTING_RECORD_SCAN_LIMIT = 3000    # açılışta kayıtlar için geriye doğru taranacak mesaj sayısı
+POSTING_CHECK_MINUTES     = 5       # yetki kontrolünün çalışma aralığı
+LIST_LIMIT                = 25      # görebilenler / yazabilenler / engellenenler en fazla bu kadar kişi olabilir
+POSTING_DISPLAY_LIMIT     = 5       # kayıt mesajında her listede en fazla kaç kişi etiketle gösterilsin
 
-KOSE_BUTTON_ID = "kose:create"  # sürümler arasında ASLA değiştirme
-SPOILER_CHANNEL_FLAG = 1 << 21   # Discord'un IS_SPOILER_CHANNEL kanal bayrağı (sadece nsfw kapalıyken açılabilir)
+# ── Ses kanalı sistemi ──
+VOICE_CREATE_CHANNEL_ID = 1533980022572843058     # bu kanala giren kişiye ses kanalı açılır
+VOICE_CATEGORY_ID       = 1569826585949900992     # ses kanalları bu kategoride açılır
+VOICE_JOIN_COOLDOWN     = 10        # aynı kişi oluşturma kanalına en erken kaç saniye sonra tekrar girebilir
+VOICE_SWEEP_MINUTES     = 10        # boş kalmış ses kanallarını süpüren döngünün aralığı
 
-# Extensions used as a fallback when Discord doesn't send a content type
-MEDIA_EXTENSIONS = (
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".avif",
-    ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v",
+# Posting sahibinin kanalındaki yetkileri
+OWNER_PERMS = dict(
+    view_channel=True,
+    send_messages=True,
+    send_messages_in_threads=True,
+    create_public_threads=True,
+    create_private_threads=True,
+    manage_messages=True,
+)
+if hasattr(discord.Permissions, "pin_messages"):   # eski discord.py sürümlerinde yok
+    OWNER_PERMS["pin_messages"] = True
+
+# Ses kanalı sahibinin yetkileri. manage_messages ayrıca "sahip işareti"dir:
+# bot yeniden başlarsa sahibi bu yetkiden tanır, o yüzden başkasına verme.
+VOICE_OWNER_PERMS = dict(
+    view_channel=True,
+    connect=True,
+    send_messages=True,
+    manage_messages=True,
+)
+
+# @everyone'dan her zaman alınan yazma yetkileri (kimse izinsiz yazamasın)
+POSTING_WRITE_PERMS = (
+    "send_messages",
+    "send_messages_in_threads",
+    "create_public_threads",
+    "create_private_threads",
 )
 
 # GIF linkleri (Discord'un GIF seçicisi bunları yollar) ve doğrudan .gif linkleri
@@ -136,35 +158,35 @@ config = {
 }
 
 # ───────────────────────────────────────────────
-#  KÖŞE DURUMU (bellekte; yeniden başlatınca istek kanalından yeniden kurulur)
+#  DURUM (bellekte; açılışta yeniden kurulur)
 # ───────────────────────────────────────────────
 
 gif_logged = set()         # GIF'i loglanmış mesaj id'leri (çift loglamayı önler)
-kose_records = {}          # kategori id -> {"owner_id", "role_id", "text_id", "voice_id"}
-pending_requests = {}      # kullanıcı id -> istek mesajı id
-handled_requests = set()   # işlenmiş istek mesajı id'leri (çift onayı önler)
 
-# İstek mesajını tanımak için şablondan regex üret
-_req_prefix, _req_suffix = RESPONSES["kose_request_message"].split("{member}")
-REQUEST_RE = re.compile(re.escape(_req_prefix) + r"<@!?(\d+)>" + re.escape(_req_suffix))
-KOSE_RECORD_RE = re.compile(r"KOSE_DATA owner=(\d+) role=(\d+) category=(\d+) text=(\d+) voice=(\d+)")
-KOSE_DELETED_RE = re.compile(r"KOSE_DELETED category=(\d+)")
+# kanal id -> {"channel_id", "owner_id", "writers", "viewers", "blocked", "hidden", "message_id"}
+posting_records = {}
+posting_state = {"initialized": False, "loaded": False}
+creating_postings = set()  # şu an kanalı oluşturulan kullanıcı id'leri (çift tıklamayı önler)
+button_cooldowns = {}      # kullanıcı id -> butona son basış zamanı (time.monotonic)
+
+# kanal id -> {"channel_id", "owner_id", "viewers", "blocked", "hidden"}
+voice_records = {}
+creating_voices = set()    # şu an ses kanalı oluşturulan kullanıcı id'leri
+voice_cooldowns = {}       # kullanıcı id -> oluşturma kanalına son giriş zamanı
+
+POSTING_RECORD_RE = re.compile(
+    r"POSTING_DATA channel=(\d+) owner=(\d+) hidden=([01]) writers=([\d,]*) blocked=([\d,]*)"
+    r"(?: viewers=([\d,]*))?"
+)
+POSTING_DELETED_RE = re.compile(r"POSTING_DELETED channel=(\d+)")
 
 NO_PINGS = discord.AllowedMentions.none()
-
-# /kosemute'un kaldırdığı yazma yetkileri (görme yetkisine dokunulmaz)
-MUTE_PERMS = (
-    "send_messages",
-    "send_messages_in_threads",
-    "create_public_threads",
-    "create_private_threads",
-)
 
 # ───────────────────────────────────────────────
 #  BOT SETUP
 # ───────────────────────────────────────────────
 
-intents = discord.Intents.default()
+intents = discord.Intents.default()   # voice_states varsayılan olarak açık
 intents.members = True          # Developer Portal'da da açık olmalı (Server Members Intent)
 intents.message_content = True  # Developer Portal'da da açık olmalı (ek dosyaları görmek için de gerekli)
 
@@ -181,7 +203,7 @@ class MyBot(commands.Bot):
             print(f"⚠️ Komut senkronizasyon hatası: {e}")
 
         # Kalıcı buton: bot yeniden başlasa da eski mesajdaki buton çalışır
-        self.add_view(CreateKoseView())
+        self.add_view(CreatePostingView())
 
         bump_check_loop.start()
 
@@ -205,14 +227,84 @@ async def get_channel_safe(channel_id: int):
         return None
 
 
-def is_media(attachment: discord.Attachment) -> bool:
-    content_type = (attachment.content_type or "").lower()
-    if content_type.startswith(("image/", "video/")):
-        return True
-    return attachment.filename.lower().endswith(MEDIA_EXTENSIONS)
+def tweak_overwrite(overwrites: dict, target, **perms):
+    """Overwrite sözlüğünde bir hedefin yetkilerini günceller; boş kalırsa kaldırır."""
+    ow = overwrites[target] if target in overwrites else discord.PermissionOverwrite()
+    ow.update(**perms)
+    if ow.is_empty():
+        overwrites.pop(target, None)
+    else:
+        overwrites[target] = ow
+
+
+async def run_guarded(coro, timeout: float = 30):
+    """Discord isteğini zaman aşımı ve hata yakalamayla çalıştırır. Hata metni ya da None döner."""
+    try:
+        await asyncio.wait_for(coro, timeout)
+        return None
+    except asyncio.TimeoutError:
+        return RESPONSES["rate_limited"]
+    except discord.Forbidden:
+        return RESPONSES["no_permission"]
+    except Exception as e:
+        print(f"❌ Komut hatası: {e!r}")
+        return RESPONSES["edit_error"].format(error=e)
+
+
+def prune_cooldowns(table: dict, window: float):
+    """Süresi dolmuş cooldown kayıtlarını temizler (sözlük şişmesin)."""
+    if len(table) < 500:
+        return
+    now = time.monotonic()
+    for key in [k for k, t in table.items() if now - t > window]:
+        table.pop(key, None)
+
+
+def target_for(guild: discord.Guild, user_id: int):
+    """Üye sunucudaysa Member, değilse Member tipinde Object döner (yetkisi korunur, geri gelince çalışır)."""
+    member = guild.get_member(user_id)
+    return member if member is not None else discord.Object(id=user_id, type=discord.Member)
+
+
+def copy_category_overwrites(category: discord.CategoryChannel) -> dict:
+    return {
+        target: discord.PermissionOverwrite.from_pair(*ow.pair())
+        for target, ow in category.overwrites.items()
+    }
+
+
+def set_view_access(record: dict, user_id: int, give: bool) -> str:
+    """
+    Görme izni verir ya da alır (posting ve ses için ortak). Sonuç: "done" | "already" | "full".
+      ver -> engelden çıkarır, görebilenlere ekler
+      al  -> görebilenlerden ve yazabilenlerden çıkarır, engellenenlere ekler
+    """
+    viewers, blocked = record["viewers"], record["blocked"]
+    writers = record.get("writers")
+    if give:
+        if user_id in viewers and user_id not in blocked:
+            return "already"
+        if user_id in blocked:
+            blocked.remove(user_id)
+        if user_id not in viewers:
+            if len(viewers) >= LIST_LIMIT:
+                return "full"
+            viewers.append(user_id)
+        return "done"
+
+    if user_id in blocked:
+        return "already"
+    if len(blocked) >= LIST_LIMIT:
+        return "full"
+    if user_id in viewers:
+        viewers.remove(user_id)
+    if writers is not None and user_id in writers:
+        writers.remove(user_id)
+    blocked.append(user_id)
+    return "done"
 
 # ───────────────────────────────────────────────
-#  MEDYA LOG SİSTEMİ
+#  MEDYA / DOSYA LOG SİSTEMİ
 # ───────────────────────────────────────────────
 
 
@@ -224,9 +316,10 @@ def log_header(message: discord.Message) -> str:
     )
 
 
-async def log_media(message: discord.Message):
-    media = [a for a in message.attachments if is_media(a)]
-    if not media:
+async def log_attachments(message: discord.Message):
+    """Mesajdaki TÜM ekleri loglar: resim, video, ses, belge, arşiv... (tür sınırı yok)."""
+    attachments = list(message.attachments)
+    if not attachments:
         return
 
     log_channel = await get_channel_safe(IMAGE_LOG_CHANNEL_ID)
@@ -237,17 +330,18 @@ async def log_media(message: discord.Message):
     header = log_header(message)
     size_limit = log_channel.guild.filesize_limit
 
-    for attachment in media:
+    for attachment in attachments:
+        info = f"{header}\n📄 **Dosya:** {discord.utils.escape_markdown(attachment.filename)}"
         try:
             if attachment.size > size_limit:
                 # Too big to re-upload, so link to the original instead
                 await log_channel.send(
-                    f"{header}\n⚠️ Dosya çok büyük, yeniden yüklenemedi: {attachment.url}",
+                    f"{info}\n⚠️ Dosya çok büyük, yeniden yüklenemedi: {attachment.url}",
                     allowed_mentions=NO_PINGS,
                 )
             else:
                 await log_channel.send(
-                    header,
+                    info,
                     file=await attachment.to_file(),
                     allowed_mentions=NO_PINGS,
                 )
@@ -256,7 +350,7 @@ async def log_media(message: discord.Message):
             # Last resort: at least log who sent it and where, with the link
             try:
                 await log_channel.send(
-                    f"{header}\n⚠️ Dosya yüklenemedi: {attachment.url}",
+                    f"{info}\n⚠️ Dosya yüklenemedi: {attachment.url}",
                     allowed_mentions=NO_PINGS,
                 )
             except Exception as e2:
@@ -314,305 +408,577 @@ async def log_gifs(message: discord.Message):
         except Exception as e:
             print(f"⚠️ GIF log kanalına gönderilemedi: {e!r}")
 
-# ───────────────────────────────────────────────
-#  KÖŞE SİSTEMİ
-# ───────────────────────────────────────────────
 
-
-def is_moderator(member: discord.Member) -> bool:
-    """İstekleri onaylayabilecek kişiler: yönetici veya kanalları yönetebilenler."""
-    perms = member.guild_permissions
-    return perms.administrator or perms.manage_channels
-
-
-def has_owner_role(member: discord.Member) -> bool:
-    return any(r.name.startswith(OWNER_ROLE_PREFIX) for r in member.roles)
-
-
-def owner_overwrite() -> discord.PermissionOverwrite:
-    """Köşe sahibinin yetkileri: mesaj silme + sabitleme."""
-    try:
-        return discord.PermissionOverwrite(manage_messages=True, pin_messages=True)
-    except (ValueError, TypeError):
-        # Eski discord.py sürümlerinde ayrı pin yetkisi yok; manage_messages yeterli
-        return discord.PermissionOverwrite(manage_messages=True)
-
-
-def get_kose_record(channel):
-    """Kanalın bulunduğu köşenin kaydını döndürür (köşe değilse None)."""
-    if isinstance(channel, discord.CategoryChannel):
-        category = channel
-    else:
-        category = getattr(channel, "category", None)
-    if category is None:
-        return None
-    return kose_records.get(category.id)
-
-
-def get_kose_owner_role(channel):
-    """Bir kanalın bulunduğu köşenin [owner] rolünü döndürür (köşe değilse None)."""
-    record = get_kose_record(channel)
-    if record is None:
-        return None
-    return channel.guild.get_role(record["role_id"])
-
-
-def is_kose_owner(member: discord.Member, channel) -> bool:
-    """Üye, bu kanalın köşesinin sahibi mi? (sahip komutları için)"""
-    role = get_kose_owner_role(channel)
-    return role is not None and role in member.roles
-
-
-class NotKoseOwner(app_commands.CheckFailure):
-    pass
-
-
-def kose_owner_only():
-    """Sahip komutları için dekoratör: @kose_owner_only() ekle, yeter."""
-    async def predicate(interaction: discord.Interaction) -> bool:
-        if isinstance(interaction.user, discord.Member) and is_kose_owner(
-            interaction.user, interaction.channel
-        ):
-            return True
-        raise NotKoseOwner()
-    return app_commands.check(predicate)
-
-
-async def save_kose_record(owner_id: int, role_id: int, category_id: int, text_id: int = 0, voice_id: int = 0):
-    """Köşe bilgilerini log kanalına yeni bir mesaj olarak yazar ve belleği günceller."""
-    channel = await get_channel_safe(KOSE_DATA_CHANNEL_ID)
+async def announce_startup():
+    """Bot ilk aktif olduğunda log kanalına kısa bir mesaj atar (Render loguna bakmadan anlamak için)."""
+    channel = await get_channel_safe(IMAGE_LOG_CHANNEL_ID)
     if channel is None:
-        raise RuntimeError("köşe kayıt kanalı bulunamadı")
+        return
+    try:
+        await channel.send(RESPONSES["startup_message"], allowed_mentions=NO_PINGS)
+    except Exception as e:
+        print(f"⚠️ Açılış mesajı gönderilemedi: {e!r}")
 
-    def ch(channel_id: int) -> str:
-        return f"<#{channel_id}>" if channel_id else "—"
+# ───────────────────────────────────────────────
+#  POSTING SİSTEMİ
+# ───────────────────────────────────────────────
+#  Bir posting kanalı tek kişiye aittir; başkası yazamaz (sahip izin verene kadar).
+#  Kanalın bütün yetkileri şu kaynaklardan HESAPLANIR (build_posting_overwrites):
+#     kategori yetkileri  +  @everyone (etiket + yazma kapalı, gizliyse görme kapalı)
+#     +  bot  +  görebilenler  +  yazabilenler  +  sahip  +  engellenenler
+#  Kontrol döngüsü kanalın gerçek yetkilerini bununla karşılaştırır, farklıysa düzeltir.
+# ───────────────────────────────────────────────
 
-    content = (
-        f"{KOSE_RECORD_TITLE}\n"
-        f"Sahip: <@{owner_id}> (`{owner_id}`)\n"
-        f"Rol: <@&{role_id}> (`{role_id}`)\n"
-        f"Kategori: <#{category_id}> (`{category_id}`)\n"
-        f"Metin: {ch(text_id)} (`{text_id}`) • Ses: {ch(voice_id)} (`{voice_id}`)\n"
-        f"`KOSE_DATA owner={owner_id} role={role_id} category={category_id} text={text_id} voice={voice_id}`"
-    )
-    await channel.send(content, allowed_mentions=NO_PINGS)
-    kose_records[category_id] = {
+
+def new_posting_record(owner_id: int, channel_id: int = 0) -> dict:
+    return {
+        "channel_id": channel_id,
         "owner_id": owner_id,
-        "role_id": role_id,
-        "text_id": text_id,
-        "voice_id": voice_id,
+        "writers": [],
+        "viewers": [],
+        "blocked": [],
+        "hidden": False,
+        "message_id": None,
     }
 
 
-async def load_kose_records():
-    """Açılışta kayıt kanalındaki köşe kayıtlarını okur. Aynı kategori için en yeni mesaj geçerlidir."""
-    channel = await get_channel_safe(KOSE_DATA_CHANNEL_ID)
-    if channel is None:
-        return
-    kose_records.clear()
-    seen = set()  # son durumu belli olan kategoriler (kayıt ya da silinmiş işareti)
-    try:
-        async for msg in channel.history(limit=KOSE_RECORD_SCAN_LIMIT):
-            if msg.author.id != bot.user.id:
-                continue
-            if msg.content.startswith(KOSE_DELETED_TITLE):
-                match = KOSE_DELETED_RE.search(msg.content)
-                if match:
-                    seen.add(int(match.group(1)))
-                continue
-            if not msg.content.startswith(KOSE_RECORD_TITLE):
-                continue
-            match = KOSE_RECORD_RE.search(msg.content)
-            if not match:
-                continue
-            owner_id, role_id, category_id, text_id, voice_id = (int(g) for g in match.groups())
-            if category_id in seen:
-                continue
-            seen.add(category_id)
-            kose_records[category_id] = {
-                "owner_id": owner_id,
-                "role_id": role_id,
-                "text_id": text_id,
-                "voice_id": voice_id,
-            }
-        print(f"✅ {len(kose_records)} köşe kaydı yüklendi.")
-    except Exception as e:
-        print(f"⚠️ Köşe kayıtları okunamadı: {e!r}")
+def get_posting(channel):
+    """Kanalın posting kaydını döndürür (posting kanalı değilse None)."""
+    return posting_records.get(getattr(channel, "id", 0))
 
 
-async def create_kose(guild: discord.Guild, member: discord.Member):
-    """Rol + kategori + metin kanalı + ses kanalı oluşturur. Hata olursa geri alır."""
-    if len(guild.channels) > 495:
-        raise RuntimeError("sunucu kanal limitine çok yakın")
-
-    created = []
-    try:
-        role = await guild.create_role(
-            name=f"{OWNER_ROLE_PREFIX}{member.name}"[:100],
-            permissions=discord.Permissions.none(),
-            reason=f"Köşe sahibi rolü: {member}",
-        )
-        created.append(role)
-        await member.add_roles(role, reason="Köşe onaylandı")
-
-        # Yetkiler role verilir; @everyone için bir şey değiştirmiyoruz (herkes görür/yazar)
-        overwrites = {role: owner_overwrite()}
-
-        category = await guild.create_category(
-            f"{KOSE_CATEGORY_EMOJI} Köşe • {member.display_name[:60]}",
-            overwrites=overwrites,
-            reason=f"Köşe: {member}",
-        )
-        created.append(category)
-        await place_kose_category(guild, category)
-
-        text_channel = await category.create_text_channel("sohbet", overwrites=overwrites)
-        created.append(text_channel)
-
-        voice_channel = await category.create_voice_channel("ses", overwrites=overwrites)
-        created.append(voice_channel)
-
-        # Rol <-> kategori bağlantısı log kanalına yazılır; yazılamazsa her şey geri alınır
-        await save_kose_record(member.id, role.id, category.id, text_channel.id, voice_channel.id)
-
-        return text_channel, role
-    except Exception:
-        for obj in reversed(created):
-            try:
-                await obj.delete(reason="Köşe oluşturma başarısız, geri alınıyor")
-            except Exception as cleanup_error:
-                print(f"⚠️ Geri alma hatası ({obj}): {cleanup_error!r}")
-        raise
+def get_posting_by_owner(user_id: int):
+    for record in posting_records.values():
+        if record["owner_id"] == user_id:
+            return record
+    return None
 
 
-def tweak_overwrite(overwrites: dict, target, **perms):
-    """Overwrite sözlüğünde bir hedefin yetkilerini günceller; boş kalırsa kaldırır."""
-    ow = overwrites[target] if target in overwrites else discord.PermissionOverwrite()
-    ow.update(**perms)
-    if ow.is_empty():
-        overwrites.pop(target, None)
-    else:
-        overwrites[target] = ow
+def postings_involving(user_id: int) -> list:
+    """Bu kişinin sahip / yazabilen / görebilen / engelli olarak geçtiği postingler."""
+    return [
+        r for r in posting_records.values()
+        if user_id == r["owner_id"]
+        or user_id in r["writers"] or user_id in r["viewers"] or user_id in r["blocked"]
+    ]
 
 
-async def apply_to_kose(category: discord.CategoryChannel, mutate):
-    """Aynı yetki değişikliğini kategoriye ve içindeki tüm kanallara uygular."""
-    for ch in [category, *category.channels]:
-        overwrites = dict(ch.overwrites)
-        mutate(overwrites)
-        await ch.edit(overwrites=overwrites)
-
-
-async def run_guarded(coro, timeout: float = 30):
-    """Discord isteğini zaman aşımı ve hata yakalamayla çalıştırır. Hata metni ya da None döner."""
-    try:
-        await asyncio.wait_for(coro, timeout)
-        return None
-    except asyncio.TimeoutError:
-        return RESPONSES["kose_rate_limited"]
-    except discord.Forbidden:
-        return RESPONSES["kose_no_permission"]
-    except Exception as e:
-        print(f"❌ Köşe komutu hatası: {e!r}")
-        return RESPONSES["kose_edit_error"].format(error=e)
-
-
-def current_kose(interaction: discord.Interaction):
-    """Komutun kullanıldığı kanal, kategorisi ve köşe kaydı."""
-    channel = interaction.channel
-    if isinstance(channel, discord.CategoryChannel):
-        category = channel
-    else:
-        category = getattr(channel, "category", None)
-    return channel, category, get_kose_record(channel)
-
-
-async def place_kose_category(guild: discord.Guild, category: discord.CategoryChannel):
-    """Yeni köşeyi mevcut köşelerin en altına, arşiv kategorilerinin üstüne yerleştirir."""
-    try:
-        anchor = guild.get_channel(KOSE_ANCHOR_CATEGORY_ID)
-        if not isinstance(anchor, discord.CategoryChannel):
-            print("⚠️ Köşe konum kategorisi bulunamadı, yeni köşe en altta kaldı.")
-            return
-        reference = anchor
-        for category_id in kose_records:
-            if category_id == category.id:
-                continue
-            other = guild.get_channel(category_id)
-            if (
-                isinstance(other, discord.CategoryChannel)
-                and other.position > anchor.position
-                and other.position > reference.position
-            ):
-                reference = other
-        await category.move(after=reference, reason="Köşe sıralaması")
-    except Exception as e:
-        print(f"⚠️ Köşe kategorisi yerleştirilemedi: {e!r}")
-
-
-class ArchiveUnavailable(Exception):
+class NotPostingOwner(app_commands.CheckFailure):
     pass
 
 
-async def archive_kose(guild: discord.Guild, category: discord.CategoryChannel, record: dict):
-    """Köşeyi silmeden arşive taşır: kanallar herkesten gizlenir, sahip rolü silinir."""
-    archive = await get_channel_safe(KOSE_ARCHIVE_CATEGORY_ID)
-    channels = list(category.channels)
-    if not isinstance(archive, discord.CategoryChannel) or len(archive.channels) + len(channels) > 50:
-        raise ArchiveUnavailable()
+def posting_owner_only():
+    """Posting sahibi komutları için dekoratör."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        record = get_posting(interaction.channel)
+        if record is not None and interaction.user.id == record["owner_id"]:
+            return True
+        raise NotPostingOwner()
+    return app_commands.check(predicate)
 
-    category_id = category.id
-    category_name = category.name
 
-    for ch in channels:
-        await ch.edit(
-            category=archive,
-            overwrites={
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                guild.me: discord.PermissionOverwrite(view_channel=True),
-            },
-            reason="Köşe silindi (arşivlendi)",
+# ── Yetki hesaplama ──
+
+
+def build_posting_overwrites(guild: discord.Guild, category: discord.CategoryChannel, record: dict) -> dict:
+    """Kaydın olması gereken yetki tablosunu hesaplar."""
+    # 1) Kategorinin yetkilerini kopyala (kategoride @everyone için yaptığın değişiklikler buradan gelir)
+    ows = copy_category_overwrites(category)
+
+    # 2) @everyone: herkesi etiketleyemesin, yazamasın; gizliyse görmesin
+    everyone = guild.default_role
+    tweak_overwrite(ows, everyone, mention_everyone=False, **{p: False for p in POSTING_WRITE_PERMS})
+    if record["hidden"]:
+        tweak_overwrite(ows, everyone, view_channel=False)
+
+    # 3) Bot her durumda görebilsin ve yazabilsin
+    if guild.me is not None:
+        tweak_overwrite(ows, guild.me, view_channel=True, send_messages=True)
+
+    owner_id = record["owner_id"]
+    blocked = set(record["blocked"]) - {owner_id}
+
+    # 4) Görme izni verilenler (engelliyse yok sayılır)
+    for user_id in record["viewers"]:
+        if user_id == owner_id or user_id in blocked:
+            continue
+        tweak_overwrite(ows, target_for(guild, user_id), view_channel=True)
+
+    # 5) Yazma izni verilenler (engelliyse yok sayılır)
+    for user_id in record["writers"]:
+        if user_id == owner_id or user_id in blocked:
+            continue
+        tweak_overwrite(
+            ows, target_for(guild, user_id),
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
         )
 
-    # Kayıt kanalına "silindi" işareti: yeniden başlatınca eski kayıt geçerli sayılmasın
-    kose_records.pop(category_id, None)
-    try:
-        data_channel = await get_channel_safe(KOSE_DATA_CHANNEL_ID)
-        if data_channel is not None:
-            mentions = " ".join(f"<#{ch.id}>" for ch in channels) or "—"
-            await data_channel.send(
-                f"{KOSE_DELETED_TITLE}\n"
-                f"Sahip: <@{record['owner_id']}> (`{record['owner_id']}`)\n"
-                f"Kategori: **{discord.utils.escape_markdown(category_name)}** (`{category_id}`)\n"
-                f"Kanallar: {mentions}\n"
-                f"`KOSE_DELETED category={category_id}`",
-                allowed_mentions=NO_PINGS,
+    # 6) Sahip
+    tweak_overwrite(ows, target_for(guild, owner_id), **OWNER_PERMS)
+
+    # 7) Engellenenler kanalı göremez
+    for user_id in blocked:
+        tweak_overwrite(ows, target_for(guild, user_id), view_channel=False)
+
+    return {t: ow for t, ow in ows.items() if not ow.is_empty()}
+
+
+def posting_overwrites_match(channel: discord.abc.GuildChannel, desired: dict) -> bool:
+    """Kanalın gerçek yetkileri hesaplananla aynı mı? (sunucuda olmayan üyeler karşılaştırılamaz, atlanır)"""
+    actual = {
+        target.id: tuple(p.value for p in ow.pair())
+        for target, ow in channel.overwrites.items()
+        if not ow.is_empty()
+    }
+    wanted = {
+        target.id: tuple(p.value for p in ow.pair())
+        for target, ow in desired.items()
+        if not isinstance(target, discord.Object)
+    }
+    return actual == wanted
+
+
+# ── Kayıt mesajı (kayıt kanalında) ──
+
+
+def build_posting_record(record: dict, compact: bool = False) -> str:
+    owner_id = record["owner_id"]
+    channel_id = record["channel_id"]
+
+    def people(ids: list) -> str:
+        if not ids:
+            return "—"
+        if compact:
+            return f"{len(ids)} kişi"
+        shown = " ".join(f"<@{i}>" for i in ids[:POSTING_DISPLAY_LIMIT])
+        extra = len(ids) - POSTING_DISPLAY_LIMIT
+        return shown + (f" (+{extra} kişi daha)" if extra > 0 else "")
+
+    def csv(ids: list) -> str:
+        return ",".join(str(i) for i in ids)
+
+    return (
+        f"{POSTING_RECORD_TITLE}\n"
+        f"Kanal: <#{channel_id}> (`{channel_id}`)\n"
+        f"Sahip: <@{owner_id}> (`{owner_id}`)\n"
+        f"Gizli: {'evet' if record['hidden'] else 'hayır'}\n"
+        f"Görebilenler: {people(record['viewers'])}\n"
+        f"Yazabilenler: {people(record['writers'])}\n"
+        f"Engellenenler: {people(record['blocked'])}\n"
+        f"`POSTING_DATA channel={channel_id} owner={owner_id} hidden={int(record['hidden'])} "
+        f"writers={csv(record['writers'])} blocked={csv(record['blocked'])} viewers={csv(record['viewers'])}`"
+    )
+
+
+def posting_record_content(record: dict) -> str:
+    content = build_posting_record(record)
+    if len(content) > 1990:   # çok kalabalık listelerde etiketler yerine sayıları göster
+        content = build_posting_record(record, compact=True)
+    return content
+
+
+async def save_posting_record(record: dict):
+    """Kaydı kayıt kanalına yazar. Mesaj varsa düzenler, yoksa yeni mesaj atar."""
+    data_channel = await get_channel_safe(POSTING_DATA_CHANNEL_ID)
+    if data_channel is None:
+        raise RuntimeError("posting kayıt kanalı bulunamadı")
+
+    content = posting_record_content(record)
+    message_id = record.get("message_id")
+    if message_id and record.get("_last") == content:
+        return  # değişen bir şey yok
+
+    if message_id:
+        try:
+            await data_channel.get_partial_message(message_id).edit(
+                content=content, allowed_mentions=NO_PINGS
             )
+            record["_last"] = content
+            return
+        except discord.NotFound:
+            pass  # mesaj silinmiş, aşağıda yenisi atılır
+
+    message = await data_channel.send(content, allowed_mentions=NO_PINGS)
+    record["message_id"] = message.id
+    record["_last"] = content
+
+
+async def mark_posting_deleted(record: dict):
+    """Kanalı silinmiş bir postingin kaydını 'silindi' olarak işaretler ve bellekten çıkarır."""
+    if record.get("_deleted"):
+        return
+    record["_deleted"] = True
+    channel_id = record["channel_id"]
+    posting_records.pop(channel_id, None)
+    content = (
+        f"{POSTING_DELETED_TITLE}\n"
+        f"Kanal: `{channel_id}`\n"
+        f"Sahip: <@{record['owner_id']}> (`{record['owner_id']}`)\n"
+        f"`POSTING_DELETED channel={channel_id}`"
+    )
+    try:
+        data_channel = await get_channel_safe(POSTING_DATA_CHANNEL_ID)
+        if data_channel is None:
+            return
+        if record.get("message_id"):
+            try:
+                await data_channel.get_partial_message(record["message_id"]).edit(
+                    content=content, allowed_mentions=NO_PINGS
+                )
+                return
+            except discord.NotFound:
+                pass
+        await data_channel.send(content, allowed_mentions=NO_PINGS)
     except Exception as e:
         print(f"⚠️ Silinme kaydı yazılamadı: {e!r}")
 
-    role = guild.get_role(record["role_id"])
-    if role is not None:
-        try:
-            await role.delete(reason="Köşe silindi")
-        except Exception as e:
-            print(f"⚠️ Sahip rolü silinemedi: {e!r}")
+
+async def load_posting_records() -> bool:
+    """Açılışta kayıt kanalından postingleri okur. Aynı kanal için en yeni mesaj geçerlidir."""
+    data_channel = await get_channel_safe(POSTING_DATA_CHANNEL_ID)
+    if data_channel is None:
+        return False
+
+    loaded = {}
+    seen = set()  # son durumu belli olan kanallar (kayıt ya da silinmiş işareti)
     try:
-        await category.delete(reason="Köşe silindi (boş kategori)")
+        async for msg in data_channel.history(limit=POSTING_RECORD_SCAN_LIMIT):
+            if msg.author.id != bot.user.id:
+                continue
+            if msg.content.startswith(POSTING_DELETED_TITLE):
+                match = POSTING_DELETED_RE.search(msg.content)
+                if match:
+                    seen.add(int(match.group(1)))
+                continue
+            if not msg.content.startswith(POSTING_RECORD_TITLE):
+                continue
+            match = POSTING_RECORD_RE.search(msg.content)
+            if not match:
+                continue
+            channel_id, owner_id = int(match.group(1)), int(match.group(2))
+            if channel_id in seen:
+                continue
+            seen.add(channel_id)
+            loaded[channel_id] = {
+                "channel_id": channel_id,
+                "owner_id": owner_id,
+                "hidden": match.group(3) == "1",
+                "writers": [int(x) for x in match.group(4).split(",") if x],
+                "blocked": [int(x) for x in match.group(5).split(",") if x],
+                "viewers": [int(x) for x in (match.group(6) or "").split(",") if x],
+                "message_id": msg.id,
+            }
     except Exception as e:
-        print(f"⚠️ Boş köşe kategorisi silinemedi: {e!r}")
+        print(f"⚠️ Posting kayıtları okunamadı: {e!r}")
+        return False
+
+    posting_records.clear()
+    posting_records.update(loaded)
+    posting_state["loaded"] = True
+    print(f"✅ {len(posting_records)} posting kaydı yüklendi.")
+    return True
 
 
-class ConfirmDeleteView(discord.ui.View):
-    def __init__(self, invoker_id: int, category_id: int):
+# ── Kanal oluşturma ──
+
+
+class PostingCategoryFull(Exception):
+    pass
+
+
+def clean_channel_part(text: str) -> str:
+    """Kanal adı için temizler: küçük harf, boşluk -> '-', emoji/özel karakterler atılır."""
+    text = re.sub(r"\s+", "-", text.strip().lower())
+    text = re.sub(r"[^\w.\-]", "", text)
+    return re.sub(r"-{2,}", "-", text).strip("-")
+
+
+def posting_channel_name(member: discord.Member, with_at: bool = True) -> str:
+    """﹛@görünen-ad-posting﹜ biçiminde, 100 karakter sınırına uyacak şekilde."""
+    prefix = "﹛@" if with_at else "﹛"
+    suffix = "-posting﹜"
+    base = clean_channel_part(member.display_name) or clean_channel_part(member.name) or str(member.id)
+    return prefix + base[: 100 - len(prefix) - len(suffix)] + suffix
+
+
+async def create_posting(guild: discord.Guild, member: discord.Member) -> discord.TextChannel:
+    """Kategorinin yetkileriyle senkron + sahip yetkileriyle kanal açar ve kaydı yazar."""
+    category = guild.get_channel(POSTING_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        raise RuntimeError("posting kategorisi bulunamadı")
+    if len(category.channels) >= 50:
+        raise PostingCategoryFull()
+    if len(guild.channels) > 495:
+        raise RuntimeError("sunucu kanal limitine çok yakın")
+
+    record = new_posting_record(member.id)
+    overwrites = build_posting_overwrites(guild, category, record)
+    reason = f"Posting kanalı: {member}"
+
+    channel = None
+    try:
+        try:
+            channel = await category.create_text_channel(
+                posting_channel_name(member, with_at=True), overwrites=overwrites, reason=reason
+            )
+        except discord.HTTPException as e:
+            if e.status != 400:
+                raise
+            # Discord isimdeki '@' karakterini kabul etmediyse onsuz dene
+            channel = await category.create_text_channel(
+                posting_channel_name(member, with_at=False), overwrites=overwrites, reason=reason
+            )
+
+        record["channel_id"] = channel.id
+        await save_posting_record(record)   # yazılamazsa kanal geri alınır
+        posting_records[channel.id] = record
+        return channel
+    except Exception:
+        if channel is not None:
+            try:
+                await channel.delete(reason="Posting oluşturma başarısız, geri alınıyor")
+            except Exception as cleanup_error:
+                print(f"⚠️ Geri alma hatası: {cleanup_error!r}")
+        raise
+
+
+# ── Kontrol / onarım ──
+
+
+async def resolve_posting_channel(guild: discord.Guild, channel_id: int):
+    """(kanal, silinmiş_mi) döndürür. Emin değilsek silinmiş saymayız."""
+    channel = guild.get_channel(channel_id)
+    if channel is not None:
+        return channel, False
+    try:
+        return await bot.fetch_channel(channel_id), False
+    except discord.NotFound:
+        return None, True
+    except Exception as e:
+        print(f"⚠️ Posting kanalı {channel_id} kontrol edilemedi: {e!r}")
+        return None, False
+
+
+async def reconcile_posting(guild: discord.Guild, record: dict, reason: str = "Posting yetki kontrolü") -> bool:
+    """Kanalın yetkilerini kayıtla karşılaştırır, farklıysa düzeltir. Düzeltme yapıldıysa True."""
+    category = guild.get_channel(POSTING_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        return False
+
+    channel, gone = await resolve_posting_channel(guild, record["channel_id"])
+    if gone:
+        await mark_posting_deleted(record)
+        return False
+    if not isinstance(channel, discord.TextChannel):
+        return False
+
+    desired = build_posting_overwrites(guild, category, record)
+    if posting_overwrites_match(channel, desired):
+        return False
+
+    await channel.edit(overwrites=desired, reason=reason)
+    print(f"🔧 Posting yetkileri düzeltildi: #{channel.name} ({channel.id})")
+    return True
+
+
+async def commit_posting(guild: discord.Guild, record: dict):
+    """Bir kaydı değiştirdikten sonra çağır: kayıt mesajını günceller ve yetkileri kanala uygular."""
+    await save_posting_record(record)
+    await reconcile_posting(guild, record, reason="Posting ayarı değişti")
+
+
+@tasks.loop(minutes=POSTING_CHECK_MINUTES)
+async def posting_check_loop():
+    if not posting_state["loaded"]:
+        await load_posting_records()
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None or not posting_state["loaded"]:
+        return
+
+    for record in list(posting_records.values()):
+        try:
+            if await reconcile_posting(guild, record):
+                await asyncio.sleep(1)   # art arda düzenlemelerde rate limit'e girmemek için
+        except discord.Forbidden:
+            print(f"⚠️ Posting {record['channel_id']} için yetki düzeltilemedi: botun 'Rolleri Yönet' yetkisi yok.")
+        except Exception as e:
+            print(f"⚠️ Posting {record['channel_id']} kontrolü başarısız: {e!r}")
+
+
+@posting_check_loop.before_loop
+async def before_posting_check():
+    await bot.wait_until_ready()
+
+
+# ── Eski postingleri sisteme alma ──
+
+
+def infer_posting_record(guild: discord.Guild, channel: discord.TextChannel, owner_id: Optional[int] = None):
+    """
+    Var olan bir kanalın yetkilerinden posting kaydı çıkarır. Sahip verilmediyse tahmin eder:
+    kanalda yazma izni açık TEK bir üye varsa (ya da birden fazlaysa tek bir 'mesaj yönet' sahibi varsa) odur.
+    Tahmin edilemezse None döner.
+    """
+    members = [
+        (t, ow) for t, ow in channel.overwrites.items()
+        if isinstance(t, discord.Member) and not t.bot
+    ]
+
+    if owner_id is None:
+        candidates = [t for t, ow in members if ow.send_messages is True]
+        if len(candidates) > 1:
+            narrowed = [t for t in candidates if channel.overwrites_for(t).manage_messages is True]
+            if len(narrowed) == 1:
+                candidates = narrowed
+        if len(candidates) != 1:
+            return None
+        owner_id = candidates[0].id
+
+    record = new_posting_record(owner_id, channel.id)
+    record["hidden"] = channel.overwrites_for(guild.default_role).view_channel is False
+    for target, ow in members:
+        if target.id == owner_id:
+            continue
+        if ow.view_channel is False:
+            record["blocked"].append(target.id)
+        elif ow.send_messages is True:
+            record["writers"].append(target.id)
+        elif ow.view_channel is True:
+            record["viewers"].append(target.id)
+    for key in ("blocked", "writers", "viewers"):
+        record[key] = record[key][:LIST_LIMIT]
+    return record
+
+
+# ── Buton ve panel ──
+
+
+class CreatePostingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        print(f"❌ Buton hatası: {error!r}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(RESPONSES["posting_create_error"], ephemeral=True)
+            else:
+                await interaction.response.send_message(RESPONSES["posting_create_error"], ephemeral=True)
+        except Exception:
+            pass
+
+    @discord.ui.button(
+        label=RESPONSES["posting_button_label"],
+        style=discord.ButtonStyle.success,
+        custom_id=POSTING_BUTTON_ID,
+    )
+    async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Önce hemen yanıt ver (3 saniye sınırı), sonra kontrolleri yap
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        member = interaction.user
+        if guild is None or not isinstance(member, discord.Member):
+            await interaction.followup.send(RESPONSES["posting_create_error"], ephemeral=True)
+            return
+        if guild.id != GUILD_ID:
+            print(f"⚠️ Yanlış sunucu: {guild.id} != {GUILD_ID}")
+            await interaction.followup.send(RESPONSES["posting_create_error"], ephemeral=True)
+            return
+
+        # Cooldown: aynı kişi art arda basamasın
+        now = time.monotonic()
+        wait = POSTING_BUTTON_COOLDOWN - (now - button_cooldowns.get(member.id, -1e9))
+        if wait > 0:
+            await interaction.followup.send(
+                RESPONSES["posting_button_cooldown"].format(seconds=int(wait) + 1), ephemeral=True
+            )
+            return
+        button_cooldowns[member.id] = now
+        prune_cooldowns(button_cooldowns, POSTING_BUTTON_COOLDOWN)
+
+        if not posting_state["loaded"]:
+            await interaction.followup.send(RESPONSES["posting_not_ready"], ephemeral=True)
+            return
+
+        existing = get_posting_by_owner(member.id)
+        if existing is not None:
+            await interaction.followup.send(
+                RESPONSES["posting_already_owner"].format(channel=f"<#{existing['channel_id']}>"),
+                ephemeral=True,
+            )
+            return
+        if member.id in creating_postings:
+            await interaction.followup.send(RESPONSES["posting_creating"], ephemeral=True)
+            return
+
+        creating_postings.add(member.id)   # araya await girmeden işaretle: çift tıklama ikinci kanal açmasın
+        try:
+            channel = await create_posting(guild, member)
+        except PostingCategoryFull:
+            await interaction.followup.send(RESPONSES["posting_category_full"], ephemeral=True)
+        except Exception as e:
+            print(f"❌ Posting oluşturulamadı: {e!r}")
+            await interaction.followup.send(RESPONSES["posting_create_error"], ephemeral=True)
+        else:
+            await interaction.followup.send(
+                RESPONSES["posting_created"].format(channel=channel.mention), ephemeral=True
+            )
+        finally:
+            creating_postings.discard(member.id)
+
+
+def is_posting_panel(msg: discord.Message) -> bool:
+    """Mesaj botun gönderdiği posting paneli mi? (metne ya da butonun custom_id'sine göre)"""
+    if msg.author.id != bot.user.id:
+        return False
+    if msg.content == RESPONSES["posting_panel_message"]:
+        return True
+    # Metni eski sürümde değişmiş panelleri de yakala
+    for row in msg.components:
+        for child in getattr(row, "children", []):
+            if getattr(child, "custom_id", None) == POSTING_BUTTON_ID:
+                return True
+    return False
+
+
+async def ensure_posting_panel():
+    """Her açılışta paneli yeni sürümün butonuyla yeniler; fazlalıkları siler."""
+    channel = await get_channel_safe(POSTING_CREATE_CHANNEL_ID)
+    if channel is None:
+        print("⚠️ Posting oluşturma kanalı bulunamadı.")
+        return
+    try:
+        panels = [m async for m in channel.history(limit=50) if is_posting_panel(m)]
+        if panels:
+            keep, *extras = panels  # en yenisi kalır
+            await keep.edit(content=RESPONSES["posting_panel_message"], view=CreatePostingView())
+            for m in extras:
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+            print("✅ Posting paneli yenilendi.")
+        else:
+            await channel.send(RESPONSES["posting_panel_message"], view=CreatePostingView())
+            print("✅ Posting paneli gönderildi.")
+    except Exception as e:
+        print(f"⚠️ Posting paneli güncellenemedi: {e!r}")
+
+
+# ── Silme onayı ──
+
+
+class ConfirmPostingDeleteView(discord.ui.View):
+    def __init__(self, invoker_id: int, channel_id: int):
         super().__init__(timeout=60)
         self.invoker_id = invoker_id
-        self.category_id = category_id
+        self.channel_id = channel_id
         self.done = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message(RESPONSES["kose_not_yours"], ephemeral=True)
+            await interaction.response.send_message(RESPONSES["not_yours"], ephemeral=True)
             return False
         return True
 
@@ -622,284 +988,290 @@ class ConfirmDeleteView(discord.ui.View):
             return
         self.done = True
         self.stop()
-        await interaction.response.edit_message(content=RESPONSES["kose_delete_working"], view=None)
+        await interaction.response.edit_message(content=RESPONSES["posting_delete_working"], view=None)
 
         guild = interaction.guild
-        category = guild.get_channel(self.category_id) if guild else None
-        record = kose_records.get(self.category_id)
-        if (
-            not isinstance(category, discord.CategoryChannel)
-            or record is None
-            or not is_kose_owner(interaction.user, category)
-        ):
-            await interaction.edit_original_response(content=RESPONSES["err_not_kose_owner"])
+        channel = guild.get_channel(self.channel_id) if guild else None
+        record = posting_records.get(self.channel_id)
+        if channel is None or record is None or record["owner_id"] != interaction.user.id:
+            await interaction.edit_original_response(content=RESPONSES["err_not_posting_owner"])
             return
 
         try:
-            await archive_kose(guild, category, record)
-        except ArchiveUnavailable:
-            await interaction.edit_original_response(content=RESPONSES["kose_delete_unavailable"])
+            await channel.delete(reason=f"/postsil: {interaction.user}")
         except Exception as e:
-            print(f"❌ Köşe arşivlenemedi: {e!r}")
+            print(f"❌ Posting silinemedi: {e!r}")
             await interaction.edit_original_response(
-                content=RESPONSES["kose_delete_error"].format(error=e)
+                content=RESPONSES["posting_delete_error"].format(error=e)
             )
-        else:
-            await interaction.edit_original_response(content=RESPONSES["kose_delete_done"])
+            return
+
+        await mark_posting_deleted(record)
+        try:
+            # Kanal silindiği için bu mesaj güncellenemeyebilir, sorun değil
+            await interaction.edit_original_response(content=RESPONSES["posting_delete_done"])
+        except Exception:
+            pass
 
     @discord.ui.button(label="Vazgeç", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.done = True
         self.stop()
-        await interaction.response.edit_message(content=RESPONSES["kose_delete_cancelled"], view=None)
+        await interaction.response.edit_message(content=RESPONSES["posting_delete_cancelled"], view=None)
+
+# ───────────────────────────────────────────────
+#  SES KANALI SİSTEMİ
+# ───────────────────────────────────────────────
+#  Oluşturma kanalına giren kişiye kendi ses kanalı açılır, oraya taşınır ve etiketlenir.
+#  Kanaldan herkes çıkınca kanal silinir. Kayıtlar bellekte tutulur; bot yeniden başlarsa
+#  sahip, kanaldaki 'mesaj yönet' yetkisinden tanınır (rebuild_voice_records).
+# ───────────────────────────────────────────────
 
 
-async def finish_request(message: discord.Message, text: str):
-    """İstek mesajını sonuçla günceller ve tepkileri temizler."""
+def new_voice_record(owner_id: int, channel_id: int = 0) -> dict:
+    return {"channel_id": channel_id, "owner_id": owner_id, "viewers": [], "blocked": [], "hidden": False}
+
+
+def get_voice(channel):
+    return voice_records.get(getattr(channel, "id", 0))
+
+
+def get_voice_by_owner(user_id: int):
+    for record in voice_records.values():
+        if record["owner_id"] == user_id:
+            return record
+    return None
+
+
+class NotVoiceOwner(app_commands.CheckFailure):
+    pass
+
+
+def voice_owner_only():
+    """Ses kanalı sahibi komutları için dekoratör."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        record = get_voice(interaction.channel)
+        if record is not None and interaction.user.id == record["owner_id"]:
+            return True
+        raise NotVoiceOwner()
+    return app_commands.check(predicate)
+
+
+class VoiceCategoryFull(Exception):
+    pass
+
+
+def humans_in(channel) -> list:
+    """Kanaldaki botlar hariç kişiler."""
+    return [m for m in channel.members if not m.bot]
+
+
+def voice_channel_name(member: discord.Member) -> str:
+    """@görünen-ad ses kanali"""
+    prefix, suffix = "@", " ses kanali"
+    name = re.sub(r"[\x00-\x1f]", "", member.display_name).strip() or member.name
+    return prefix + name[: 100 - len(prefix) - len(suffix)] + suffix
+
+
+def build_voice_overwrites(guild: discord.Guild, category: discord.CategoryChannel, record: dict) -> dict:
+    ows = copy_category_overwrites(category)
+
+    everyone = guild.default_role
+    tweak_overwrite(ows, everyone, mention_everyone=False)
+    if record["hidden"]:
+        tweak_overwrite(ows, everyone, view_channel=False)
+
+    if guild.me is not None:
+        tweak_overwrite(ows, guild.me, view_channel=True, connect=True, send_messages=True)
+
+    owner_id = record["owner_id"]
+    blocked = set(record["blocked"]) - {owner_id}
+
+    for user_id in record["viewers"]:
+        if user_id == owner_id or user_id in blocked:
+            continue
+        tweak_overwrite(ows, target_for(guild, user_id), view_channel=True)
+
+    tweak_overwrite(ows, target_for(guild, owner_id), **VOICE_OWNER_PERMS)
+
+    for user_id in blocked:
+        tweak_overwrite(ows, target_for(guild, user_id), view_channel=False)
+
+    return {t: ow for t, ow in ows.items() if not ow.is_empty()}
+
+
+async def apply_voice(guild: discord.Guild, record: dict, reason: str = "Ses kanalı ayarı değişti"):
+    channel = guild.get_channel(record["channel_id"])
+    if channel is None:
+        return
+    category = guild.get_channel(VOICE_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        category = channel.category
+    if category is None:
+        return
+    await channel.edit(overwrites=build_voice_overwrites(guild, category, record), reason=reason)
+
+
+async def create_voice(guild: discord.Guild, member: discord.Member):
+    category = guild.get_channel(VOICE_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        raise RuntimeError("ses kategorisi bulunamadı")
+    if len(category.channels) >= 50:
+        raise VoiceCategoryFull()
+    if len(guild.channels) > 495:
+        raise RuntimeError("sunucu kanal limitine çok yakın")
+
+    record = new_voice_record(member.id)
+    channel = await category.create_voice_channel(
+        voice_channel_name(member),
+        overwrites=build_voice_overwrites(guild, category, record),
+        reason=f"Ses kanalı: {member}",
+    )
+    record["channel_id"] = channel.id
+    voice_records[channel.id] = record
+    return channel
+
+
+async def delete_voice(channel):
+    voice_records.pop(channel.id, None)
     try:
-        await message.edit(content=text, allowed_mentions=NO_PINGS)
-    except Exception as e:
-        print(f"⚠️ İstek mesajı düzenlenemedi: {e!r}")
-    try:
-        await message.clear_reactions()
-    except Exception:
+        await channel.delete(reason="Ses kanalı boşaldı")
+    except discord.NotFound:
         pass
-
-
-async def approve_request(message: discord.Message, requester_id: int, approver: discord.Member):
-    guild = message.guild
-    mention = f"<@{requester_id}>"
-
-    member = guild.get_member(requester_id)
-    if member is None:
-        try:
-            member = await guild.fetch_member(requester_id)
-        except Exception:
-            member = None
-    if member is None:
-        await finish_request(message, RESPONSES["kose_user_missing"].format(member=mention))
-        return
-
-    if has_owner_role(member):
-        await finish_request(message, RESPONSES["kose_owner_exists"].format(member=mention))
-        return
-
-    try:
-        text_channel, role = await create_kose(guild, member)
     except Exception as e:
-        print(f"❌ Köşe oluşturulamadı: {e!r}")
-        await finish_request(
-            message, RESPONSES["kose_create_failed"].format(member=mention, error=e)
-        )
-        return
-
-    await finish_request(
-        message,
-        RESPONSES["kose_approved"].format(
-            member=mention, mod=approver.mention, channel=text_channel.mention
-        ),
-    )
-
-    try:
-        await text_channel.send(
-            RESPONSES["kose_welcome"].format(member=member.mention, role=role.mention),
-            allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
-        )
-    except Exception as e:
-        print(f"⚠️ Köşe karşılama mesajı gönderilemedi: {e!r}")
+        print(f"⚠️ Ses kanalı silinemedi ({channel.id}): {e!r}")
 
 
-async def deny_request(message: discord.Message, requester_id: int, approver: discord.Member):
-    await finish_request(
-        message,
-        RESPONSES["kose_denied"].format(member=f"<@{requester_id}>", mod=approver.mention),
-    )
+async def handle_voice_create(member: discord.Member):
+    """Oluşturma kanalına giren kişiye ses kanalı açar, taşır ve etiketler."""
+    guild = member.guild
 
-
-class CreateKoseView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
-        print(f"❌ Buton hatası: {error!r}")
+    # Cooldown: art arda girip çıkarak kanal açıp kapatmasın
+    now = time.monotonic()
+    if now - voice_cooldowns.get(member.id, -1e9) < VOICE_JOIN_COOLDOWN:
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
-            else:
-                await interaction.response.send_message(RESPONSES["kose_request_error"], ephemeral=True)
+            await member.move_to(None, reason="Ses kanalı cooldown")
         except Exception:
             pass
+        return
+    voice_cooldowns[member.id] = now
+    prune_cooldowns(voice_cooldowns, VOICE_JOIN_COOLDOWN)
 
-    @discord.ui.button(
-        label=RESPONSES["kose_button_label"],
-        style=discord.ButtonStyle.success,
-        custom_id=KOSE_BUTTON_ID,
-    )
-    async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Önce hemen yanıt ver (3 saniye sınırı), sonra kontrolleri yap
-        await interaction.response.defer(ephemeral=True)
+    if member.id in creating_voices:
+        return
+    creating_voices.add(member.id)
+    try:
+        # Zaten ses kanalı varsa yenisini açma, onu kullan
+        existing = get_voice_by_owner(member.id)
+        if existing is not None:
+            old = guild.get_channel(existing["channel_id"])
+            if old is not None:
+                await member.move_to(old, reason="Mevcut ses kanalına taşındı")
+                return
+            voice_records.pop(existing["channel_id"], None)
 
-        member = interaction.user
-        if interaction.guild is None or not isinstance(member, discord.Member):
-            await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
-            return
-        if interaction.guild.id != GUILD_ID:
-            print(f"⚠️ Yanlış sunucu: {interaction.guild.id} != {GUILD_ID}")
-            await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
-            return
-
-        if has_owner_role(member):
-            await interaction.followup.send(RESPONSES["kose_already_owner"], ephemeral=True)
-            return
-        if member.id in pending_requests:
-            await interaction.followup.send(RESPONSES["kose_already_pending"], ephemeral=True)
-            return
-
-        # Yeri hemen ayır (araya await girmeden) ki çift tıklama ikinci istek açmasın
-        pending_requests[member.id] = 0
-
-        channel = await get_channel_safe(KOSE_REQUEST_CHANNEL_ID)
-        if channel is None:
-            pending_requests.pop(member.id, None)
-            await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
-            return
-
-        request_msg = None
+        channel = await create_voice(guild, member)
         try:
-            request_msg = await channel.send(
-                RESPONSES["kose_request_message"].format(member=member.mention),
-                allowed_mentions=NO_PINGS,
-            )
-            await request_msg.add_reaction(APPROVE_EMOJI)
-            await request_msg.add_reaction(DENY_EMOJI)
+            await member.move_to(channel, reason="Ses kanalı oluşturuldu")
         except Exception as e:
-            print(f"❌ Köşe isteği gönderilemedi: {e!r}")
-            pending_requests.pop(member.id, None)
-            if request_msg is not None:
-                try:
-                    await request_msg.delete()
-                except Exception:
-                    pass
-            await interaction.followup.send(RESPONSES["kose_request_error"], ephemeral=True)
+            # Kişi bu arada çıkmış olabilir: boşta kanal kalmasın
+            print(f"⚠️ {member} ses kanalına taşınamadı: {e!r}")
+            await delete_voice(channel)
             return
 
-        pending_requests[member.id] = request_msg.id
-        await interaction.followup.send(RESPONSES["kose_request_sent"], ephemeral=True)
-
-
-def is_kose_panel(msg: discord.Message) -> bool:
-    """Mesaj botun gönderdiği köşe paneli mi? (metne ya da butonun custom_id'sine göre)"""
-    if msg.author.id != bot.user.id:
-        return False
-    if msg.content == RESPONSES["kose_panel_message"]:
-        return True
-    # Metni eski sürümde değişmiş panelleri de yakala
-    for row in msg.components:
-        for child in getattr(row, "children", []):
-            if getattr(child, "custom_id", None) == KOSE_BUTTON_ID:
-                return True
-    return False
-
-
-async def ensure_kose_panel():
-    """Her açılışta paneli yeni sürümün butonuyla yeniler; fazlalıkları siler."""
-    channel = await get_channel_safe(KOSE_CREATE_CHANNEL_ID)
-    if channel is None:
-        print("⚠️ Köşe oluşturma kanalı bulunamadı.")
-        return
-    try:
-        panels = [m async for m in channel.history(limit=50) if is_kose_panel(m)]
-        if panels:
-            keep, *extras = panels  # en yenisi kalır
-            await keep.edit(content=RESPONSES["kose_panel_message"], view=CreateKoseView())
-            for m in extras:
-                try:
-                    await m.delete()
-                except Exception:
-                    pass
-            print("✅ Köşe paneli yenilendi.")
-        else:
-            await channel.send(RESPONSES["kose_panel_message"], view=CreateKoseView())
-            print("✅ Köşe paneli gönderildi.")
-    except Exception as e:
-        print(f"⚠️ Köşe paneli güncellenemedi: {e!r}")
-
-
-async def rebuild_pending_requests():
-    """Yeniden başlatma sonrası bekleyen istekleri istek kanalından geri yükler."""
-    channel = await get_channel_safe(KOSE_REQUEST_CHANNEL_ID)
-    if channel is None:
-        return
-    pending_requests.clear()
-    try:
-        async for msg in channel.history(limit=200):
-            if msg.author.id != bot.user.id:
-                continue
-            match = REQUEST_RE.fullmatch(msg.content)
-            if match:
-                pending_requests.setdefault(int(match.group(1)), msg.id)
-        print(f"✅ {len(pending_requests)} bekleyen köşe isteği yüklendi.")
-    except Exception as e:
-        print(f"⚠️ Bekleyen istekler okunamadı: {e!r}")
-
-
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.channel_id != KOSE_REQUEST_CHANNEL_ID or payload.guild_id != GUILD_ID:
-        return
-    if payload.user_id == bot.user.id:
-        return
-    emoji = str(payload.emoji)
-    if emoji not in (APPROVE_EMOJI, DENY_EMOJI):
-        return
-
-    channel = await get_channel_safe(KOSE_REQUEST_CHANNEL_ID)
-    if channel is None:
-        return
-    try:
-        message = await channel.fetch_message(payload.message_id)
-    except Exception:
-        return
-    if message.author.id != bot.user.id:
-        return
-    match = REQUEST_RE.fullmatch(message.content)
-    if not match:
-        return  # zaten sonuçlanmış ya da istek mesajı değil
-
-    reactor = payload.member
-    if reactor is None or reactor.bot:
-        return
-
-    if not is_moderator(reactor):
         try:
-            await message.remove_reaction(payload.emoji, reactor)
+            await channel.send(
+                RESPONSES["voice_welcome"].format(member=member.mention),
+                allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
+            )
+        except Exception as e:
+            print(f"⚠️ Ses kanalına karşılama mesajı gönderilemedi: {e!r}")
+    except VoiceCategoryFull:
+        print("⚠️ Ses kategorisi dolu.")
+        try:
+            await member.move_to(None, reason="Ses kategorisi dolu")
         except Exception:
             pass
+    except Exception as e:
+        print(f"❌ Ses kanalı oluşturulamadı: {e!r}")
+    finally:
+        creating_voices.discard(member.id)
+
+
+def infer_voice_record(guild: discord.Guild, channel: discord.VoiceChannel):
+    """Yeniden başlatma sonrası: sahibi 'mesaj yönet' yetkisi olan üyeden tanır. Bizim kanalımız değilse None."""
+    me_id = guild.me.id if guild.me is not None else 0
+    owner_id = None
+    for target, ow in channel.overwrites.items():
+        if isinstance(target, discord.Member) and target.id != me_id and ow.manage_messages is True:
+            owner_id = target.id
+            break
+    if owner_id is None:
+        return None
+
+    record = new_voice_record(owner_id, channel.id)
+    record["hidden"] = channel.overwrites_for(guild.default_role).view_channel is False
+    for target, ow in channel.overwrites.items():
+        if not isinstance(target, discord.Member) or target.bot or target.id in (owner_id, me_id):
+            continue
+        if ow.view_channel is False:
+            record["blocked"].append(target.id)
+        elif ow.view_channel is True:
+            record["viewers"].append(target.id)
+    record["blocked"] = record["blocked"][:LIST_LIMIT]
+    record["viewers"] = record["viewers"][:LIST_LIMIT]
+    return record
+
+
+async def rebuild_voice_records(guild: discord.Guild):
+    """Açılışta: kategorideki bizim ses kanallarını geri yükler, boş kalanları siler."""
+    category = guild.get_channel(VOICE_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        print("⚠️ Ses kategorisi bulunamadı.")
         return
 
-    # Kontrol + işaretleme arasında await yok: iki moderatör aynı anda tıklasa bile tek işlem çalışır
-    if message.id in handled_requests:
+    voice_records.clear()
+    restored = removed = 0
+    for channel in list(category.voice_channels):
+        if channel.id == VOICE_CREATE_CHANNEL_ID:
+            continue
+        record = infer_voice_record(guild, channel)
+        if record is None:
+            continue   # bizim açtığımız bir kanal değil, dokunma
+        if not humans_in(channel):
+            try:
+                await channel.delete(reason="Boş ses kanalı temizlendi")
+                removed += 1
+            except Exception as e:
+                print(f"⚠️ Boş ses kanalı silinemedi ({channel.id}): {e!r}")
+            continue
+        voice_records[channel.id] = record
+        restored += 1
+    print(f"✅ {restored} ses kanalı geri yüklendi, {removed} boş ses kanalı silindi.")
+
+
+@tasks.loop(minutes=VOICE_SWEEP_MINUTES)
+async def voice_sweep_loop():
+    """Bir sebeple silinememiş boş ses kanallarını toplar."""
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
         return
-    handled_requests.add(message.id)
+    for record in list(voice_records.values()):
+        channel = guild.get_channel(record["channel_id"])
+        if channel is None:
+            voice_records.pop(record["channel_id"], None)
+            continue
+        if humans_in(channel):
+            continue
+        age = (datetime.now(timezone.utc) - channel.created_at).total_seconds()
+        if age < 60:
+            continue   # yeni açıldı, kişi henüz taşınıyor olabilir
+        await delete_voice(channel)
 
-    requester_id = int(match.group(1))
-    if pending_requests.get(requester_id) == message.id:
-        pending_requests.pop(requester_id, None)
 
-    if emoji == APPROVE_EMOJI:
-        await approve_request(message, requester_id, reactor)
-    else:
-        await deny_request(message, requester_id, reactor)
-
-
-@bot.event
-async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
-    # Moderatör istek mesajını silerse kullanıcı sonsuza kadar "bekleyen" kalmasın
-    if payload.channel_id != KOSE_REQUEST_CHANNEL_ID:
-        return
-    for user_id, message_id in list(pending_requests.items()):
-        if message_id == payload.message_id:
-            pending_requests.pop(user_id, None)
+@voice_sweep_loop.before_loop
+async def before_voice_sweep():
+    await bot.wait_until_ready()
 
 # ───────────────────────────────────────────────
 #  BUMP KONTROL
@@ -957,12 +1329,9 @@ async def before_bump_check():
 #  EVENTS
 # ───────────────────────────────────────────────
 
-kose_initialized = False
-
 
 @bot.event
 async def on_ready():
-    global kose_initialized
     print(f"✅ Giriş yapıldı: {bot.user} (ID: {bot.user.id})")
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
@@ -971,19 +1340,19 @@ async def on_ready():
 
     # Startup self-check: reports missing channels/permissions in the logs
     gp = guild.me.guild_permissions
-    for perm in ("manage_channels", "manage_roles", "manage_messages"):
+    for perm in ("manage_channels", "manage_roles", "move_members"):
         if not (getattr(gp, perm) or gp.administrator):
-            print(f"⚠️ Botun sunucu genelinde '{perm}' yetkisi yok (köşe sistemi için gerekli).")
+            print(f"⚠️ Botun sunucu genelinde '{perm}' yetkisi yok (posting / ses sistemi için gerekli).")
 
     checks = {
         "Karşılama kanalı": (WELCOME_CHANNEL_ID, ["view_channel", "send_messages"]),
         "Log kanalı": (IMAGE_LOG_CHANNEL_ID, ["view_channel", "send_messages", "attach_files"]),
         "Bump kanalı": (BUMP_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
-        "Köşe kayıt kanalı": (KOSE_DATA_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
-        "Köşe konum kategorisi": (KOSE_ANCHOR_CATEGORY_ID, ["view_channel", "manage_channels"]),
-        "Köşe arşiv kategorisi": (KOSE_ARCHIVE_CATEGORY_ID, ["view_channel", "manage_channels"]),
-        "Köşe oluşturma kanalı": (KOSE_CREATE_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
-        "Köşe istek kanalı": (KOSE_REQUEST_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history", "add_reactions"]),
+        "Posting kayıt kanalı": (POSTING_DATA_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
+        "Posting kategorisi": (POSTING_CATEGORY_ID, ["view_channel", "manage_channels", "manage_roles"]),
+        "Posting oluşturma kanalı": (POSTING_CREATE_CHANNEL_ID, ["view_channel", "send_messages", "read_message_history"]),
+        "Ses oluşturma kanalı": (VOICE_CREATE_CHANNEL_ID, ["view_channel", "connect", "move_members"]),
+        "Ses kategorisi": (VOICE_CATEGORY_ID, ["view_channel", "manage_channels", "manage_roles", "move_members"]),
     }
     for name, (channel_id, needed) in checks.items():
         channel = guild.get_channel(channel_id)
@@ -997,12 +1366,17 @@ async def on_ready():
         else:
             print(f"✅ {name} (#{channel.name}) tamam.")
 
-    # on_ready yeniden bağlanmalarda tekrar tetiklenir; köşe kurulumu bir kez yapılır
-    if not kose_initialized:
-        kose_initialized = True
-        await load_kose_records()
-        await rebuild_pending_requests()
-        await ensure_kose_panel()
+    # on_ready yeniden bağlanmalarda tekrar tetiklenir; kurulum ve açılış mesajı bir kez yapılır
+    if not posting_state["initialized"]:
+        posting_state["initialized"] = True
+        await announce_startup()
+        await load_posting_records()
+        await ensure_posting_panel()
+        await rebuild_voice_records(guild)
+        if not posting_check_loop.is_running():
+            posting_check_loop.start()
+        if not voice_sweep_loop.is_running():
+            voice_sweep_loop.start()
 
 
 @bot.event
@@ -1010,6 +1384,13 @@ async def on_member_join(member: discord.Member):
     print(f"👋 Yeni üye: {member} (sunucu: {member.guild.id})")
     if member.guild.id != GUILD_ID:
         return
+
+    # Geri dönen üyenin posting yetkilerini (sahip / yazabilen / görebilen / engelli) hemen geri ver
+    for record in postings_involving(member.id):
+        try:
+            await reconcile_posting(member.guild, record, reason=f"Üye geri döndü: {member}")
+        except Exception as e:
+            print(f"⚠️ {member} için posting yetkileri geri verilemedi: {e!r}")
 
     channel = await get_channel_safe(WELCOME_CHANNEL_ID)
     if channel is None:
@@ -1038,7 +1419,7 @@ async def on_message(message: discord.Message):
         and message.channel.id != IMAGE_LOG_CHANNEL_ID
     ):
         if message.attachments:
-            await log_media(message)
+            await log_attachments(message)
         await log_gifs(message)
 
     await bot.process_commands(message)
@@ -1066,8 +1447,62 @@ async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
         return
     await log_gifs(message)
 
+
+@bot.event
+async def on_guild_channel_create(channel):
+    """Sunucuda açılan HER kanalda @everyone'ın herkesi etiketleme yetkisini kapatır."""
+    guild = channel.guild
+    if guild.id != GUILD_ID:
+        return
+    everyone = guild.default_role
+    overwrite = channel.overwrites_for(everyone)
+    if overwrite.mention_everyone is False:
+        return   # zaten kapalı (botun kendi açtığı kanallar böyle gelir)
+    overwrite.mention_everyone = False
+    try:
+        await channel.set_permissions(
+            everyone, overwrite=overwrite, reason="Yeni kanal: @everyone etiket yetkisi kapatıldı"
+        )
+    except Exception as e:
+        print(f"⚠️ #{channel.name} için @everyone etiket yetkisi kapatılamadı: {e!r}")
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    if channel.guild.id != GUILD_ID:
+        return
+    voice_records.pop(channel.id, None)
+    record = posting_records.get(channel.id)
+    if record is not None:
+        await mark_posting_deleted(record)
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if member.guild.id != GUILD_ID:
+        return
+    left, joined = before.channel, after.channel
+
+    # Oluşturma kanalına girdi -> ses kanalı aç
+    if (
+        not member.bot
+        and joined is not None
+        and joined.id == VOICE_CREATE_CHANNEL_ID
+        and (left is None or left.id != joined.id)
+    ):
+        await handle_voice_create(member)
+
+    # Bir ses kanalından ayrıldı -> kimse kalmadıysa sil
+    if (
+        left is not None
+        and left.id in voice_records
+        and (joined is None or joined.id != left.id)
+        and not humans_in(left)
+    ):
+        await delete_voice(left)
+
 # ───────────────────────────────────────────────
-#  SLASH COMMANDS
+#  SLASH COMMANDS — GENEL / YÖNETİCİ
 # ───────────────────────────────────────────────
 
 
@@ -1098,370 +1533,326 @@ async def send_msg(interaction: discord.Interaction, channel_id: str, message: s
         )
 
 
-# ── Köşe sahibi komutları (sadece kendi köşesinde, rolü olan kişi kullanabilir) ──
-
-
-@bot.tree.command(name="koseisim", description="Köşenin kategori adını değiştirir.")
-@app_commands.describe(isim="Yeni kategori adı")
-@kose_owner_only()
-async def kose_isim(interaction: discord.Interaction, isim: app_commands.Range[str, 1, 100]):
-    _, category, _ = current_kose(interaction)
-    new_name = isim.strip()
-    if not new_name:
-        await interaction.response.send_message(RESPONSES["kose_name_empty"], ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(category.edit(name=new_name, reason=f"/koseisim: {interaction.user}"))
-    await interaction.followup.send(
-        error or RESPONSES["kose_category_renamed"].format(name=new_name), ephemeral=True
-    )
-
-
-@bot.tree.command(name="kanalisim", description="Komutu kullandığın kanalın adını değiştirir.")
-@app_commands.describe(isim="Yeni kanal adı")
-@kose_owner_only()
-async def kanal_isim(interaction: discord.Interaction, isim: app_commands.Range[str, 1, 100]):
-    channel = interaction.channel
-    if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel)):
-        await interaction.response.send_message(RESPONSES["kose_channel_unsupported"], ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(channel.edit(name=isim.strip(), reason=f"/kanalisim: {interaction.user}"))
-    await interaction.followup.send(
-        error or RESPONSES["kose_channel_renamed"].format(channel=channel.mention), ephemeral=True
-    )
-
-
-@bot.tree.command(name="kanalaciklama", description="Komutu kullandığın kanalın açıklamasını değiştirir.")
-@app_commands.describe(aciklama="Yeni kanal açıklaması")
-@kose_owner_only()
-async def kanal_aciklama(interaction: discord.Interaction, aciklama: app_commands.Range[str, 1, 1024]):
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(RESPONSES["kose_channel_unsupported"], ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(channel.edit(topic=aciklama, reason=f"/kanalaciklama: {interaction.user}"))
-    await interaction.followup.send(error or RESPONSES["kose_topic_updated"], ephemeral=True)
-
-
-async def set_content_mode(channel: discord.TextChannel, mode: str, reason: str):
-    """Kanalı nsfw / spoiler / normal yapar. Spoiler kanalı Discord'un gerçek ayarıdır (kanal bayrağı)."""
-    data = await bot.http.get_channel(channel.id)   # güncel bayraklar (diğer bayraklar korunur)
-    flags = int(data.get("flags", 0))
-    if mode == "spoiler":
-        flags |= SPOILER_CHANNEL_FLAG
-        nsfw = False
-    elif mode == "nsfw":
-        flags &= ~SPOILER_CHANNEL_FLAG
-        nsfw = True
-    else:
-        flags &= ~SPOILER_CHANNEL_FLAG
-        nsfw = False
-    route = discord.http.Route("PATCH", "/channels/{channel_id}", channel_id=channel.id)
-    await bot.http.request(route, json={"nsfw": nsfw, "flags": flags}, reason=reason)
-
-
-@bot.tree.command(name="kanaldurum", description="Komutu kullandığın kanalı nsfw, spoiler ya da normal olarak işaretler.")
-@app_commands.describe(durum="nsfw, spoiler ya da normal")
-@app_commands.choices(durum=[
-    app_commands.Choice(name="nsfw", value="nsfw"),
-    app_commands.Choice(name="spoiler", value="spoiler"),
-    app_commands.Choice(name="normal", value="normal"),
-])
-@kose_owner_only()
-async def kanal_durum(interaction: discord.Interaction, durum: app_commands.Choice[str]):
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(RESPONSES["kose_channel_unsupported"], ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(
-        set_content_mode(channel, durum.value, f"/kanaldurum: {interaction.user}")
-    )
-    await interaction.followup.send(
-        error or RESPONSES[f"kanal_durum_{durum.value}"].format(channel=channel.mention),
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="kanalslowmode", description="Komutu kullandığın kanalın yavaş modunu ayarlar (0 = kapat).")
-@app_commands.describe(saniye="Saniye cinsinden süre (0-21600, 0 = kapat)")
-@kose_owner_only()
-async def kanal_slowmode(interaction: discord.Interaction, saniye: app_commands.Range[int, 0, 21600]):
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(RESPONSES["kose_channel_unsupported"], ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(
-        channel.edit(slowmode_delay=saniye, reason=f"/kanalslowmode: {interaction.user}")
-    )
-    if error:
-        await interaction.followup.send(error, ephemeral=True)
-        return
-    key = "kanal_slowmode_off" if saniye == 0 else "kanal_slowmode_set"
-    await interaction.followup.send(
-        RESPONSES[key].format(channel=channel.mention, seconds=saniye), ephemeral=True
-    )
-
-
-@bot.tree.command(name="kosedurum", description="Köşeni herkesten gizle ya da tekrar göster.")
-@app_commands.describe(durum="goster ya da gizle")
-@app_commands.choices(durum=[
-    app_commands.Choice(name="goster", value="goster"),
-    app_commands.Choice(name="gizle", value="gizle"),
-])
-@kose_owner_only()
-async def kose_durum(interaction: discord.Interaction, durum: app_commands.Choice[str]):
-    _, category, record = current_kose(interaction)
-    guild = interaction.guild
-    want_hidden = durum.value == "gizle"
-    hidden_now = category.overwrites_for(guild.default_role).view_channel is False
-
-    if want_hidden == hidden_now:
-        key = "kose_already_hidden" if hidden_now else "kose_already_visible"
-        await interaction.response.send_message(RESPONSES[key], ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    owner_role = guild.get_role(record["role_id"])
-
-    def mutate(overwrites):
-        tweak_overwrite(overwrites, guild.default_role, view_channel=False if want_hidden else None)
-        if owner_role is not None:
-            tweak_overwrite(overwrites, owner_role, view_channel=True if want_hidden else None)
-        if want_hidden:
-            tweak_overwrite(overwrites, guild.me, view_channel=True)  # bot kanalı görmeye devam etsin
-
-    error = await run_guarded(apply_to_kose(category, mutate), timeout=60)
-    await interaction.followup.send(
-        error or RESPONSES["kose_hidden" if want_hidden else "kose_shown"], ephemeral=True
-    )
-
-
-@bot.tree.command(name="koseban", description="Bir kişiyi köşenden engeller (köşeni ondan gizler).")
-@app_commands.describe(kullanici="Engellenecek kişi")
-@kose_owner_only()
-async def kose_ban(interaction: discord.Interaction, kullanici: discord.Member):
-    _, category, record = current_kose(interaction)
-    guild = interaction.guild
-    owner_role = guild.get_role(record["role_id"])
-
-    if (
-        kullanici.bot
-        or kullanici.id == interaction.user.id
-        or kullanici.id == record["owner_id"]
-        or (owner_role is not None and owner_role in kullanici.roles)
-    ):
-        await interaction.response.send_message(RESPONSES["kose_ban_invalid"], ephemeral=True)
-        return
-    if category.overwrites_for(kullanici).view_channel is False:
-        await interaction.response.send_message(
-            RESPONSES["kose_ban_already"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(
-        apply_to_kose(category, lambda ov: tweak_overwrite(ov, kullanici, view_channel=False)),
-        timeout=60,
-    )
-    if error:
-        await interaction.followup.send(error, ephemeral=True)
-        return
-
-    # Köşenin ses kanalındaysa bağlantısını kes
-    voice = kullanici.voice
-    if voice is not None and voice.channel is not None and voice.channel.category_id == category.id:
-        try:
-            await kullanici.move_to(None, reason="Köşeden engellendi")
-        except Exception:
-            pass
-
-    await interaction.followup.send(
-        RESPONSES["kose_ban_done"].format(member=kullanici.mention), ephemeral=True
-    )
-
-
-@bot.tree.command(name="koseunban", description="Köşenden engellediğin kişinin engelini kaldırır.")
-@app_commands.describe(kullanici="Engeli kaldırılacak kişi")
-@kose_owner_only()
-async def kose_unban(interaction: discord.Interaction, kullanici: discord.Member):
-    _, category, _ = current_kose(interaction)
-
-    if category.overwrites_for(kullanici).view_channel is not False:
-        await interaction.response.send_message(
-            RESPONSES["kose_unban_not_banned"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    error = await run_guarded(
-        apply_to_kose(category, lambda ov: tweak_overwrite(ov, kullanici, view_channel=None)),
-        timeout=60,
-    )
-    await interaction.followup.send(
-        error or RESPONSES["kose_unban_done"].format(member=kullanici.mention), ephemeral=True
-    )
-
-
-@bot.tree.command(name="koseizin", description="Köşen gizliyken de kanalları görebilecek kişi ekler (ya da kaldırır).")
-@app_commands.describe(kullanici="İzin verilecek kişi", islem="ver (varsayılan) ya da kaldir")
-@app_commands.choices(islem=[
-    app_commands.Choice(name="ver", value="ver"),
-    app_commands.Choice(name="kaldir", value="kaldir"),
-])
-@kose_owner_only()
-async def kose_izin(
-    interaction: discord.Interaction,
-    kullanici: discord.Member,
-    islem: Optional[app_commands.Choice[str]] = None,
-):
-    _, category, _ = current_kose(interaction)
-    removing = islem is not None and islem.value == "kaldir"
-    current = category.overwrites_for(kullanici).view_channel
-
-    if current is False:
-        # Engelli kişinin yetkisine dokunma: engeli /koseunban kaldırır
-        await interaction.response.send_message(
-            RESPONSES["kose_izin_banned"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-    if removing and current is not True:
-        await interaction.response.send_message(
-            RESPONSES["kose_izin_none"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-    if not removing and current is True:
-        await interaction.response.send_message(
-            RESPONSES["kose_izin_already"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    value = None if removing else True
-    error = await run_guarded(
-        apply_to_kose(category, lambda ov: tweak_overwrite(ov, kullanici, view_channel=value)),
-        timeout=60,
-    )
-    key = "kose_izin_removed" if removing else "kose_izin_given"
-    await interaction.followup.send(
-        error or RESPONSES[key].format(member=kullanici.mention), ephemeral=True
-    )
-
-
-@bot.tree.command(name="kosemute", description="Bir kişinin köşende yazmasını engeller (kanalları görmeye devam eder).")
-@app_commands.describe(kullanici="Susturulacak kişi", islem="mute (varsayılan) ya da unmute")
-@app_commands.choices(islem=[
-    app_commands.Choice(name="mute", value="mute"),
-    app_commands.Choice(name="unmute", value="unmute"),
-])
-@kose_owner_only()
-async def kose_mute(
-    interaction: discord.Interaction,
-    kullanici: discord.Member,
-    islem: Optional[app_commands.Choice[str]] = None,
-):
-    _, category, record = current_kose(interaction)
-    guild = interaction.guild
-    unmuting = islem is not None and islem.value == "unmute"
-    owner_role = guild.get_role(record["role_id"])
-
-    if (
-        kullanici.bot
-        or kullanici.id == interaction.user.id
-        or kullanici.id == record["owner_id"]
-        or (owner_role is not None and owner_role in kullanici.roles)
-    ):
-        await interaction.response.send_message(RESPONSES["kose_mute_invalid"], ephemeral=True)
-        return
-
-    muted_now = category.overwrites_for(kullanici).send_messages is False
-    if unmuting and not muted_now:
-        await interaction.response.send_message(
-            RESPONSES["kose_unmute_not_muted"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-    if not unmuting and muted_now:
-        await interaction.response.send_message(
-            RESPONSES["kose_mute_already"].format(member=kullanici.mention), ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    value = None if unmuting else False
-    perms = {name: value for name in MUTE_PERMS}
-    error = await run_guarded(
-        apply_to_kose(category, lambda ov: tweak_overwrite(ov, kullanici, **perms)),
-        timeout=60,
-    )
-    key = "kose_unmute_done" if unmuting else "kose_mute_done"
-    await interaction.followup.send(
-        error or RESPONSES[key].format(member=kullanici.mention), ephemeral=True
-    )
-
-
-@bot.tree.command(name="kosesil", description="Köşeni arşive kaldırır (herkesten gizlenir, sahip rolü silinir).")
-@kose_owner_only()
-async def kose_sil(interaction: discord.Interaction):
-    _, category, _ = current_kose(interaction)
-    view = ConfirmDeleteView(interaction.user.id, category.id)
-    await interaction.response.send_message(RESPONSES["kose_delete_confirm"], view=view, ephemeral=True)
-
-
-# ── Yönetici komutları ──
-
-
-@bot.tree.command(name="kosekaydet", description="Köşe bilgilerini (eksik id'leri) log kanalına yeni kayıt olarak yazar.")
-@app_commands.describe(
-    kategori="Köşe kategorisi",
-    sahip="Köşe sahibi (boş bırakırsan eski kayıttan alınır)",
-    rol="Köşenin [owner] rolü (boş bırakırsan eski kayıttan alınır)",
-)
-@app_commands.checks.has_permissions(administrator=True)
-async def kose_kaydet(
-    interaction: discord.Interaction,
-    kategori: discord.CategoryChannel,
-    sahip: Optional[discord.Member] = None,
-    rol: Optional[discord.Role] = None,
-):
-    old = kose_records.get(kategori.id, {})
-    owner_id = sahip.id if sahip else old.get("owner_id")
-    role_id = rol.id if rol else old.get("role_id")
-    if not owner_id or not role_id:
-        await interaction.response.send_message(RESPONSES["kose_record_missing"], ephemeral=True)
-        return
-
-    # Eksik kanal id'leri kategorinin içinden tamamlanır
-    text_id = old.get("text_id") or (kategori.text_channels[0].id if kategori.text_channels else 0)
-    voice_id = old.get("voice_id") or (kategori.voice_channels[0].id if kategori.voice_channels else 0)
-
-    await interaction.response.defer(ephemeral=True)
-    try:
-        await save_kose_record(owner_id, role_id, kategori.id, text_id, voice_id)
-    except Exception as e:
-        await interaction.followup.send(RESPONSES["kose_record_error"].format(error=e), ephemeral=True)
-        return
-
-    reply = RESPONSES["kose_record_saved"].format(category=kategori.mention)
-    role_obj = interaction.guild.get_role(role_id)
-    if role_obj is None or not role_obj.name.startswith(OWNER_ROLE_PREFIX):
-        reply += RESPONSES["kose_record_prefix_warning"]
-    await interaction.followup.send(reply, ephemeral=True)
-
-
 @bot.tree.command(name="checkbump", description="Bump durumunu ve zamanlayıcıyı manuel test eder (Debug).")
 @app_commands.checks.has_permissions(administrator=True)
 async def check_bump(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     result = await perform_bump_check()
     await interaction.followup.send(f"🔍 **Debug Sonucu:**\n```text\n{result}\n```", ephemeral=True)
+
+
+@bot.tree.command(
+    name="postingkaydet",
+    description="Eski posting kanallarını sisteme alır ve kayıt kanalına loglar.",
+)
+@app_commands.describe(
+    kanal="Kaydedilecek kanal (boş bırakırsan kategorideki kayıtsız tüm kanallar taranır)",
+    sahip="Kanalın sahibi (boş bırakırsan kanalın yetkilerinden tahmin edilir)",
+    onizleme="Evet dersen hiçbir şey kaydetmez, sadece ne yapacağını gösterir",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def posting_kaydet(
+    interaction: discord.Interaction,
+    kanal: Optional[discord.TextChannel] = None,
+    sahip: Optional[discord.Member] = None,
+    onizleme: bool = False,
+):
+    if sahip is not None and kanal is None:
+        await interaction.response.send_message("❌ Sahip seçtiysen kanalı da seçmelisin.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    category = guild.get_channel(POSTING_CATEGORY_ID)
+    if not posting_state["loaded"]:
+        await interaction.followup.send(RESPONSES["posting_not_ready"], ephemeral=True)
+        return
+    if not isinstance(category, discord.CategoryChannel):
+        await interaction.followup.send("❌ Posting kategorisi bulunamadı.", ephemeral=True)
+        return
+
+    # Taranmayacak özel kanallar (panel, kayıt, log vb.)
+    special = {POSTING_CREATE_CHANNEL_ID, POSTING_DATA_CHANNEL_ID, IMAGE_LOG_CHANNEL_ID}
+    if kanal is not None:
+        targets = [kanal]
+    else:
+        targets = [c for c in category.text_channels if c.id not in special and c.id not in posting_records]
+
+    lines = []
+    registered = 0
+    for channel in targets:
+        if channel.id in posting_records:
+            lines.append(f"⏭️ {channel.mention}: zaten kayıtlı")
+            continue
+        if channel.id in special:
+            lines.append(f"⏭️ {channel.mention}: özel kanal, atlandı")
+            continue
+
+        record = infer_posting_record(guild, channel, sahip.id if sahip else None)
+        if record is None:
+            lines.append(f"❓ {channel.mention}: sahibi tahmin edilemedi (`/postingkaydet kanal sahip` ile elle ver)")
+            continue
+        if get_posting_by_owner(record["owner_id"]) is not None:
+            lines.append(f"⏭️ {channel.mention}: <@{record['owner_id']}> kişisinin zaten bir postingi kayıtlı")
+            continue
+
+        if onizleme:
+            lines.append(f"👁️ {channel.mention} → <@{record['owner_id']}> olarak kaydedilecek")
+            continue
+
+        try:
+            await save_posting_record(record)
+            posting_records[channel.id] = record
+            await reconcile_posting(guild, record, reason="Eski posting sisteme alındı")
+            registered += 1
+            lines.append(f"✅ {channel.mention} → <@{record['owner_id']}>")
+        except Exception as e:
+            print(f"❌ Posting kaydedilemedi ({channel.id}): {e!r}")
+            lines.append(f"⚠️ {channel.mention}: kaydedilemedi ({e})")
+        await asyncio.sleep(1)   # art arda yazmalarda rate limit'e girmemek için
+
+    if not lines:
+        lines.append("ℹ️ Kaydedilecek kayıtsız kanal bulunamadı.")
+    header = "🔍 **Önizleme**" if onizleme else f"📥 **{registered} posting kaydedildi**"
+    text = header + "\n" + "\n".join(lines)
+    if len(text) > 1900:
+        text = text[:1890].rsplit("\n", 1)[0] + "\n… (liste kısaltıldı)"
+    await interaction.followup.send(text, ephemeral=True)
+
+# ───────────────────────────────────────────────
+#  SLASH COMMANDS — POSTING SAHİBİ (sadece kendi postinginde)
+# ───────────────────────────────────────────────
+
+
+@bot.tree.command(name="postaciklama", description="Posting kanalının açıklamasını değiştirir.")
+@app_commands.describe(aciklama="Yeni kanal açıklaması")
+@posting_owner_only()
+async def post_aciklama(interaction: discord.Interaction, aciklama: app_commands.Range[str, 1, 1024]):
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message(RESPONSES["posting_channel_unsupported"], ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(channel.edit(topic=aciklama, reason=f"/postaciklama: {interaction.user}"))
+    await interaction.followup.send(error or RESPONSES["posting_desc_updated"], ephemeral=True)
+
+
+@bot.tree.command(name="postdurum", description="Posting kanalını herkesten gizler ya da tekrar açar.")
+@app_commands.describe(durum="gizli ya da acik")
+@app_commands.choices(durum=[
+    app_commands.Choice(name="gizli", value="gizli"),
+    app_commands.Choice(name="acik", value="acik"),
+])
+@posting_owner_only()
+async def post_durum(interaction: discord.Interaction, durum: app_commands.Choice[str]):
+    record = get_posting(interaction.channel)
+    want_hidden = durum.value == "gizli"
+    if record["hidden"] == want_hidden:
+        key = "posting_already_hidden" if want_hidden else "posting_already_visible"
+        await interaction.response.send_message(RESPONSES[key], ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    record["hidden"] = want_hidden
+    error = await run_guarded(commit_posting(interaction.guild, record), timeout=60)
+    await interaction.followup.send(
+        error or RESPONSES["posting_hidden" if want_hidden else "posting_shown"], ephemeral=True
+    )
+
+
+@bot.tree.command(name="postizin", description="Birine kanalı görme izni verir ya da alır (alırsan kanalı göremez).")
+@app_commands.describe(islem="ver ya da al", kullanici="İşlem yapılacak kişi")
+@app_commands.choices(islem=[
+    app_commands.Choice(name="ver", value="ver"),
+    app_commands.Choice(name="al", value="al"),
+])
+@posting_owner_only()
+async def post_izin(
+    interaction: discord.Interaction,
+    islem: app_commands.Choice[str],
+    kullanici: discord.Member,
+):
+    record = get_posting(interaction.channel)
+    if kullanici.bot or kullanici.id == record["owner_id"]:
+        await interaction.response.send_message(RESPONSES["target_invalid"], ephemeral=True)
+        return
+
+    giving = islem.value == "ver"
+    result = set_view_access(record, kullanici.id, giving)
+    if result == "full":
+        await interaction.response.send_message(RESPONSES["list_full"].format(limit=LIST_LIMIT), ephemeral=True)
+        return
+    if result == "already":
+        key = "view_already" if giving else "view_taken_already"
+        await interaction.response.send_message(RESPONSES[key].format(member=kullanici.mention), ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(commit_posting(interaction.guild, record), timeout=60)
+    key = "view_given" if giving else "view_taken"
+    await interaction.followup.send(error or RESPONSES[key].format(member=kullanici.mention), ephemeral=True)
+
+
+@bot.tree.command(name="postmisafir", description="Birine kanalda yazma izni verir ya da alır.")
+@app_commands.describe(islem="ver ya da al", kullanici="İşlem yapılacak kişi")
+@app_commands.choices(islem=[
+    app_commands.Choice(name="ver", value="ver"),
+    app_commands.Choice(name="al", value="al"),
+])
+@posting_owner_only()
+async def post_misafir(
+    interaction: discord.Interaction,
+    islem: app_commands.Choice[str],
+    kullanici: discord.Member,
+):
+    record = get_posting(interaction.channel)
+    if kullanici.bot or kullanici.id == record["owner_id"]:
+        await interaction.response.send_message(RESPONSES["target_invalid"], ephemeral=True)
+        return
+
+    giving = islem.value == "ver"
+    writers = record["writers"]
+    mention = kullanici.mention
+    if giving:
+        if kullanici.id in record["blocked"]:
+            await interaction.response.send_message(RESPONSES["posting_write_blocked"].format(member=mention), ephemeral=True)
+            return
+        if kullanici.id in writers:
+            await interaction.response.send_message(RESPONSES["posting_write_already"].format(member=mention), ephemeral=True)
+            return
+        if len(writers) >= LIST_LIMIT:
+            await interaction.response.send_message(RESPONSES["list_full"].format(limit=LIST_LIMIT), ephemeral=True)
+            return
+        writers.append(kullanici.id)
+    else:
+        if kullanici.id not in writers:
+            await interaction.response.send_message(RESPONSES["posting_write_none"].format(member=mention), ephemeral=True)
+            return
+        writers.remove(kullanici.id)
+
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(commit_posting(interaction.guild, record), timeout=60)
+    key = "posting_write_given" if giving else "posting_write_taken"
+    await interaction.followup.send(error or RESPONSES[key].format(member=mention), ephemeral=True)
+
+
+@bot.tree.command(name="postnsfw", description="Posting kanalını NSFW (yaş sınırlı) olarak işaretler ya da işareti kaldırır.")
+@app_commands.describe(durum="evt = NSFW yap, hyr = NSFW'yi kaldır")
+@app_commands.choices(durum=[
+    app_commands.Choice(name="evt", value="evt"),
+    app_commands.Choice(name="hyr", value="hyr"),
+])
+@posting_owner_only()
+async def post_nsfw(interaction: discord.Interaction, durum: app_commands.Choice[str]):
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message(RESPONSES["posting_channel_unsupported"], ephemeral=True)
+        return
+
+    want_nsfw = durum.value == "evt"
+    if channel.nsfw == want_nsfw:
+        key = "posting_nsfw_already_on" if want_nsfw else "posting_nsfw_already_off"
+        await interaction.response.send_message(RESPONSES[key], ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(channel.edit(nsfw=want_nsfw, reason=f"/postnsfw: {interaction.user}"))
+    await interaction.followup.send(
+        error or RESPONSES["posting_nsfw_on" if want_nsfw else "posting_nsfw_off"], ephemeral=True
+    )
+
+
+@bot.tree.command(name="postsil", description="Posting kanalını kalıcı olarak siler.")
+@posting_owner_only()
+async def post_sil(interaction: discord.Interaction):
+    view = ConfirmPostingDeleteView(interaction.user.id, interaction.channel.id)
+    await interaction.response.send_message(RESPONSES["posting_delete_confirm"], view=view, ephemeral=True)
+
+# ───────────────────────────────────────────────
+#  SLASH COMMANDS — SES KANALI SAHİBİ (sadece kendi ses kanalının yazı sohbetinde)
+# ───────────────────────────────────────────────
+
+
+@bot.tree.command(name="sesaciklama", description="Ses kanalının durum mesajını değiştirir.")
+@app_commands.describe(mesaj="Yeni durum mesajı")
+@voice_owner_only()
+async def ses_aciklama(interaction: discord.Interaction, mesaj: app_commands.Range[str, 1, 500]):
+    channel = interaction.channel
+    if not isinstance(channel, discord.VoiceChannel):
+        await interaction.response.send_message(RESPONSES["voice_channel_unsupported"], ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    route = discord.http.Route("PUT", "/channels/{channel_id}/voice-status", channel_id=channel.id)
+    error = await run_guarded(bot.http.request(route, json={"status": mesaj}))
+    await interaction.followup.send(error or RESPONSES["voice_status_updated"], ephemeral=True)
+
+
+@bot.tree.command(name="sesdurum", description="Ses kanalını herkesten gizler ya da tekrar açar.")
+@app_commands.describe(durum="gizli ya da acik")
+@app_commands.choices(durum=[
+    app_commands.Choice(name="gizli", value="gizli"),
+    app_commands.Choice(name="acik", value="acik"),
+])
+@voice_owner_only()
+async def ses_durum(interaction: discord.Interaction, durum: app_commands.Choice[str]):
+    record = get_voice(interaction.channel)
+    want_hidden = durum.value == "gizli"
+    if record["hidden"] == want_hidden:
+        key = "voice_already_hidden" if want_hidden else "voice_already_visible"
+        await interaction.response.send_message(RESPONSES[key], ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    record["hidden"] = want_hidden
+    error = await run_guarded(apply_voice(interaction.guild, record), timeout=60)
+    await interaction.followup.send(
+        error or RESPONSES["voice_hidden" if want_hidden else "voice_shown"], ephemeral=True
+    )
+
+
+@bot.tree.command(name="sesizin", description="Birine ses kanalını görme izni verir ya da alır (alırsan kanalı göremez).")
+@app_commands.describe(islem="ver ya da al", kullanici="İşlem yapılacak kişi")
+@app_commands.choices(islem=[
+    app_commands.Choice(name="ver", value="ver"),
+    app_commands.Choice(name="al", value="al"),
+])
+@voice_owner_only()
+async def ses_izin(
+    interaction: discord.Interaction,
+    islem: app_commands.Choice[str],
+    kullanici: discord.Member,
+):
+    record = get_voice(interaction.channel)
+    if kullanici.bot or kullanici.id == record["owner_id"]:
+        await interaction.response.send_message(RESPONSES["target_invalid"], ephemeral=True)
+        return
+
+    giving = islem.value == "ver"
+    result = set_view_access(record, kullanici.id, giving)
+    if result == "full":
+        await interaction.response.send_message(RESPONSES["list_full"].format(limit=LIST_LIMIT), ephemeral=True)
+        return
+    if result == "already":
+        key = "view_already" if giving else "view_taken_already"
+        await interaction.response.send_message(RESPONSES[key].format(member=kullanici.mention), ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    error = await run_guarded(apply_voice(interaction.guild, record), timeout=60)
+    if error:
+        await interaction.followup.send(error, ephemeral=True)
+        return
+
+    # Görme izni alınan kişi kanaldaysa bağlantısını kes
+    if not giving and kullanici.voice is not None and kullanici.voice.channel is not None \
+            and kullanici.voice.channel.id == record["channel_id"]:
+        try:
+            await kullanici.move_to(None, reason="Ses kanalından engellendi")
+        except Exception:
+            pass
+
+    key = "view_given" if giving else "view_taken"
+    await interaction.followup.send(RESPONSES[key].format(member=kullanici.mention), ephemeral=True)
 
 # ───────────────────────────────────────────────
 #  HATA YAKALAYICI
@@ -1472,8 +1863,10 @@ async def check_bump(interaction: discord.Interaction):
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         msg = RESPONSES["err_missing_permissions"]
-    elif isinstance(error, NotKoseOwner):
-        msg = RESPONSES["err_not_kose_owner"]
+    elif isinstance(error, NotPostingOwner):
+        msg = RESPONSES["err_not_posting_owner"]
+    elif isinstance(error, NotVoiceOwner):
+        msg = RESPONSES["err_not_voice_owner"]
     elif isinstance(error, app_commands.CommandOnCooldown):
         msg = RESPONSES["err_cooldown"].format(retry_after=round(error.retry_after, 1))
     else:
