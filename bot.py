@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 import sys
 sys.stdout.reconfigure(line_buffering=True)
@@ -79,6 +79,10 @@ RESPONSES = {
     "voice_shown": "👀 Ses kanalın tekrar herkese açık.",
     "voice_already_hidden": "ℹ️ Ses kanalı zaten gizli.",
     "voice_already_visible": "ℹ️ Ses kanalı zaten herkese açık.",
+    # ── Günlük mesaj hedefi ──
+    "goal_channel_missing": "❌ Karşılama kanalı bulunamadı.",
+    "goal_set": "✅ Günlük mesaj hedefi **{goal}** olarak ayarlandı. Şu an: {count}/{goal}",
+    "goal_pending": "⏳ Hedef **{goal}** olarak ayarlandı ({count}/{goal}) ama kanal açıklaması şu an güncellenemedi, birkaç dakika içinde otomatik güncellenecek.\n{error}",
     "voice_channel_unsupported": "❌ Bu komut sadece ses kanalının yazı sohbetinde kullanılabilir.",
 }
 
@@ -89,9 +93,9 @@ RESPONSES = {
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID             = 1381768080610426930
-WELCOME_CHANNEL_ID   = 1488662459009994965
+WELCOME_CHANNEL_ID   = 1480314604713414757
 BUMP_CHANNEL_ID      = 1381771230964748370
-IMAGE_LOG_CHANNEL_ID = 1381770621054091306   # medya / dosya / GIF logları + açılış mesajı
+IMAGE_LOG_CHANNEL_ID = 1480317488456536166   # medya / dosya / GIF logları + açılış mesajı
 
 BUMP_BOT_ID = 302050872383242240  # Disboard
 
@@ -113,6 +117,12 @@ VOICE_CREATE_CHANNEL_ID = 1533980022572843058     # bu kanala giren kişiye ses 
 VOICE_CATEGORY_ID       = 1569826585949900992     # ses kanalları bu kategoride açılır
 VOICE_JOIN_COOLDOWN     = 10        # aynı kişi oluşturma kanalına en erken kaç saniye sonra tekrar girebilir
 VOICE_SWEEP_MINUTES     = 10        # boş kalmış ses kanallarını süpüren döngünün aralığı
+
+# ── Günlük mesaj hedefi (karşılama kanalı) ──
+GOAL_TOPIC_PREFIX       = "gunluk mesaj hedefi"   # kanal açıklaması: "gunluk mesaj hedefi 12/50"
+GOAL_TIMEZONE           = timezone(timedelta(hours=3))   # gün sınırı: Türkiye saati (UTC+3), gece 00:00'da sıfırlanır
+GOAL_TOPIC_MIN_INTERVAL = 300     # kanal açıklaması en sık bu kadar saniyede bir güncellenir (Discord sınırı: 10 dk'da 2 değişiklik)
+GOAL_COUNT_SCAN_LIMIT   = 10000   # açılışta bugünkü mesajları saymak için taranacak en fazla mesaj
 
 # Posting sahibinin kanalındaki yetkileri
 OWNER_PERMS = dict(
@@ -173,6 +183,9 @@ button_cooldowns = {}      # kullanıcı id -> butona son basış zamanı (time.
 voice_records = {}
 creating_voices = set()    # şu an ses kanalı oluşturulan kullanıcı id'leri
 voice_cooldowns = {}       # kullanıcı id -> oluşturma kanalına son giriş zamanı
+
+# Günlük mesaj hedefi: goal=None ise sistem kapalıdır (hedef açılışta kanal açıklamasından geri okunur)
+goal_state = {"goal": None, "count": 0, "day": None, "dirty": False, "last_text": None, "last_edit": 0.0}
 
 POSTING_RECORD_RE = re.compile(
     r"POSTING_DATA channel=(\d+) owner=(\d+) hidden=([01]) writers=([\d,]*) blocked=([\d,]*)"
@@ -418,6 +431,130 @@ async def announce_startup():
         await channel.send(RESPONSES["startup_message"], allowed_mentions=NO_PINGS)
     except Exception as e:
         print(f"⚠️ Açılış mesajı gönderilemedi: {e!r}")
+
+# ───────────────────────────────────────────────
+#  GÜNLÜK MESAJ HEDEFİ
+# ───────────────────────────────────────────────
+#  Karşılama kanalının açıklaması "gunluk mesaj hedefi <yazılan>/<hedef>" olur.
+#  Yeni mesajda +1, silinen mesajda -1 (sadece bugün yazılmış mesajlar). Gece 00:00'da (TR saati) sıfırlanır.
+#  Hedef kanal açıklamasından, sayı da bugünkü mesajlardan geri okunur; yeniden başlatma sorun olmaz.
+#  Discord kanal açıklamasını 10 dakikada en fazla 2 kez değiştirmeye izin verdiği için açıklama
+#  mesaj başına değil, en sık 5 dakikada bir güncellenir.
+# ───────────────────────────────────────────────
+
+GOAL_TOPIC_RE = re.compile(re.escape(GOAL_TOPIC_PREFIX) + r" (\d+)/(\d+)")
+
+
+def goal_day_start() -> datetime:
+    return datetime.now(GOAL_TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def goal_topic_text() -> str:
+    return f"{GOAL_TOPIC_PREFIX} {goal_state['count']}/{goal_state['goal']}"
+
+
+def counts_for_goal(message: discord.Message) -> bool:
+    """Karşılama kanalındaki, bot olmayan gerçek mesajlar sayılır."""
+    return (
+        message.guild is not None
+        and message.guild.id == GUILD_ID
+        and message.channel.id == WELCOME_CHANNEL_ID
+        and not message.author.bot
+        and message.type in (discord.MessageType.default, discord.MessageType.reply)
+    )
+
+
+def goal_message_added():
+    if goal_state["goal"] is None:
+        return
+    goal_state["count"] += 1
+    goal_state["dirty"] = True
+
+
+def goal_message_removed(message_id: int, cached: Optional[discord.Message] = None):
+    """Silinen mesaj bugün yazıldıysa sayıyı düşürür (mesajın ne zaman yazıldığı id'sinden bulunur)."""
+    if goal_state["goal"] is None:
+        return
+    if discord.utils.snowflake_time(message_id).astimezone(GOAL_TIMEZONE) < goal_day_start():
+        return   # önceki günün mesajı, bugünkü sayıyı etkilemez
+    if cached is not None and not counts_for_goal(cached):
+        return   # bot mesajı vb., zaten sayılmamıştı
+    goal_state["count"] = max(0, goal_state["count"] - 1)
+    goal_state["dirty"] = True
+
+
+async def count_todays_messages(channel) -> int:
+    count = 0
+    async for msg in channel.history(after=goal_day_start(), limit=GOAL_COUNT_SCAN_LIMIT):
+        if not msg.author.bot and msg.type in (discord.MessageType.default, discord.MessageType.reply):
+            count += 1
+    return count
+
+
+async def update_goal_topic():
+    """Kanal açıklamasını güncel sayıyla yazar (değişmediyse dokunmaz)."""
+    if goal_state["goal"] is None:
+        return
+    text = goal_topic_text()
+    if text == goal_state["last_text"]:
+        goal_state["dirty"] = False
+        return
+    channel = await get_channel_safe(WELCOME_CHANNEL_ID)
+    if channel is None:
+        return
+    await channel.edit(topic=text, reason="Günlük mesaj hedefi")
+    goal_state["last_text"] = text
+    goal_state["last_edit"] = time.monotonic()
+    goal_state["dirty"] = False
+
+
+async def load_goal_state():
+    """Açılışta hedefi kanal açıklamasından, sayıyı bugünkü mesajlardan geri kurar."""
+    channel = await get_channel_safe(WELCOME_CHANNEL_ID)
+    if channel is None:
+        return
+    match = GOAL_TOPIC_RE.search(getattr(channel, "topic", None) or "")
+    if not match:
+        print("ℹ️ Günlük mesaj hedefi ayarlı değil (/gunlukhedef ile ayarla).")
+        return
+    goal_state["goal"] = int(match.group(2))
+    goal_state["last_text"] = match.group(0)
+    try:
+        goal_state["count"] = await count_todays_messages(channel)
+    except Exception as e:
+        print(f"⚠️ Bugünkü mesajlar sayılamadı, açıklamadaki sayı kullanılıyor: {e!r}")
+        goal_state["count"] = int(match.group(1))
+    goal_state["day"] = datetime.now(GOAL_TIMEZONE).date()
+    goal_state["dirty"] = goal_topic_text() != goal_state["last_text"]
+    print(f"✅ Günlük mesaj hedefi yüklendi: {goal_state['count']}/{goal_state['goal']}")
+
+
+@tasks.loop(minutes=1)
+async def goal_loop():
+    if goal_state["goal"] is None:
+        return
+
+    # Gün değiştiyse sayıyı sıfırla
+    today = datetime.now(GOAL_TIMEZONE).date()
+    if goal_state["day"] != today:
+        goal_state["day"] = today
+        goal_state["count"] = 0
+        goal_state["dirty"] = True
+
+    if not goal_state["dirty"]:
+        return
+    if time.monotonic() - goal_state["last_edit"] < GOAL_TOPIC_MIN_INTERVAL:
+        return   # Discord'un açıklama değiştirme sınırına takılmamak için bekle
+    try:
+        await update_goal_topic()
+    except Exception as e:
+        print(f"⚠️ Günlük hedef açıklaması güncellenemedi: {e!r}")
+
+
+@goal_loop.before_loop
+async def before_goal_loop():
+    await bot.wait_until_ready()
+
 
 # ───────────────────────────────────────────────
 #  POSTING SİSTEMİ
@@ -1373,6 +1510,9 @@ async def on_ready():
         await load_posting_records()
         await ensure_posting_panel()
         await rebuild_voice_records(guild)
+        await load_goal_state()
+        if not goal_loop.is_running():
+            goal_loop.start()
         if not posting_check_loop.is_running():
             posting_check_loop.start()
         if not voice_sweep_loop.is_running():
@@ -1412,6 +1552,9 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
+    if counts_for_goal(message):
+        goal_message_added()
+
     if (
         message.guild is not None
         and message.guild.id == GUILD_ID
@@ -1446,6 +1589,20 @@ async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
     if message.author.bot:
         return
     await log_gifs(message)
+
+
+@bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    if payload.guild_id == GUILD_ID and payload.channel_id == WELCOME_CHANNEL_ID:
+        goal_message_removed(payload.message_id, payload.cached_message)
+
+
+@bot.event
+async def on_raw_bulk_message_delete(payload: discord.RawBulkMessageDeleteEvent):
+    if payload.guild_id == GUILD_ID and payload.channel_id == WELCOME_CHANNEL_ID:
+        cached = {m.id: m for m in payload.cached_messages}
+        for message_id in payload.message_ids:
+            goal_message_removed(message_id, cached.get(message_id))
 
 
 @bot.event
@@ -1539,6 +1696,33 @@ async def check_bump(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     result = await perform_bump_check()
     await interaction.followup.send(f"🔍 **Debug Sonucu:**\n```text\n{result}\n```", ephemeral=True)
+
+
+@bot.tree.command(name="gunlukhedef", description="Karşılama kanalı için günlük mesaj hedefini ayarlar.")
+@app_commands.describe(sayi="Günlük mesaj hedefi")
+@app_commands.checks.has_permissions(administrator=True)
+async def gunluk_hedef(interaction: discord.Interaction, sayi: app_commands.Range[int, 1, 1000000]):
+    await interaction.response.defer(ephemeral=True)
+    channel = await get_channel_safe(WELCOME_CHANNEL_ID)
+    if channel is None:
+        await interaction.followup.send(RESPONSES["goal_channel_missing"], ephemeral=True)
+        return
+
+    # Sayıyı bugünkü mesajlardan hesapla ki hedef ilk ayarlandığında doğru başlasın
+    try:
+        goal_state["count"] = await count_todays_messages(channel)
+    except Exception as e:
+        print(f"⚠️ Bugünkü mesajlar sayılamadı: {e!r}")
+    goal_state["goal"] = sayi
+    goal_state["day"] = datetime.now(GOAL_TIMEZONE).date()
+    goal_state["dirty"] = True
+
+    error = await run_guarded(update_goal_topic())
+    fields = dict(goal=sayi, count=goal_state["count"])
+    if error:
+        await interaction.followup.send(RESPONSES["goal_pending"].format(error=error, **fields), ephemeral=True)
+    else:
+        await interaction.followup.send(RESPONSES["goal_set"].format(**fields), ephemeral=True)
 
 
 @bot.tree.command(
